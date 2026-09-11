@@ -1,0 +1,32 @@
+# Local development stack. `docker compose up` then open http://localhost:8080
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: roomiq
+      POSTGRES_USER: roomiq
+      POSTGRES_DB: roomiq
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U roomiq"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://roomiq:roomiq@db:5432/roomiq
+      JWT_SECRET: local-dev-secret-change-me
+      APP_TIMEZONE: Asia/Kolkata
+      PUBLIC_URL: http://localhost:8080
+      MAIL_DRIVER: log
+      SEED_ADMIN_EMAIL: admin@uneecops.in
+      SEED_ADMIN_PASSWORD: Admin@123
+    ports: ["8080:8080"]
+
+volumes:
+  pgdata:
