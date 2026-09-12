@@ -29,42 +29,92 @@ function getTransport() {
    AUTH, while this needs only the resource's access key. Signed with the ACS
    HMAC scheme, which is a content hash plus date and host — no SDK required.
 --------------------------------------------------------------------------- */
-async function acsSend({ to, toName, subject, html, text }) {
-  const { acsEndpoint, acsKey, from } = config.mail;
-  if (!acsEndpoint || !acsKey) throw new Error('ACS_ENDPOINT and ACS_ACCESS_KEY must both be set.');
-
-  // "UneeRooms <donotreply@x.azurecomm.net>" → the bare address ACS wants.
-  const senderAddress = (from.match(/<([^>]+)>/)?.[1] || from).trim();
-  const path = '/emails:send?api-version=2023-03-31';
-  const url = new URL(acsEndpoint + path);
-  const body = JSON.stringify({
-    senderAddress,
-    content: { subject, plainText: text, html },
-    recipients: { to: [{ address: to, displayName: toName || to }] }
-  });
-
-  const contentHash = createHash('sha256').update(body, 'utf8').digest('base64');
+/** One signed ACS request. The scheme is a content hash plus date and host. */
+async function acsRequest(method, url, bodyStr = '') {
+  const { acsKey } = config.mail;
+  const u = new URL(url);
+  const contentHash = createHash('sha256').update(bodyStr, 'utf8').digest('base64');
   const date = new Date().toUTCString();
-  const stringToSign = `POST
-${url.pathname}${url.search}
-${date};${url.host};${contentHash}`;
+  const stringToSign = `${method}\n${u.pathname}${u.search}\n${date};${u.host};${contentHash}`;
   const signature = createHmac('sha256', Buffer.from(acsKey, 'base64'))
     .update(stringToSign, 'utf8').digest('base64');
 
-  const res = await fetch(url, {
-    method: 'POST',
+  return fetch(u, {
+    method,
     headers: {
       'Content-Type': 'application/json',
       'x-ms-date': date,
       'x-ms-content-sha256': contentHash,
       Authorization: `HMAC-SHA256 SignedHeaders=x-ms-date;host;x-ms-content-sha256&Signature=${signature}`
     },
-    body
+    ...(bodyStr ? { body: bodyStr } : {})
+  });
+}
+
+function acsReady() {
+  const { acsEndpoint, acsKey } = config.mail;
+  if (!acsEndpoint || !acsKey) throw new Error('ACS_ENDPOINT and ACS_ACCESS_KEY must both be set.');
+  return acsEndpoint;
+}
+
+/** Hand a message to ACS. Returns the operation id, which is how delivery is
+    traced afterwards — a 202 here means accepted, not delivered. */
+export async function acsSend({ to, toName, subject, html, text }) {
+  const endpoint = acsReady();
+  // "UneeRooms <donotreply@x.azurecomm.net>" → the bare address ACS wants.
+  const senderAddress = (config.mail.from.match(/<([^>]+)>/)?.[1] || config.mail.from).trim();
+  const body = JSON.stringify({
+    senderAddress,
+    content: { subject, plainText: text, html },
+    recipients: { to: [{ address: to, displayName: toName || to }] }
   });
 
-  // 202 Accepted is the success case; ACS then delivers asynchronously.
+  const res = await acsRequest('POST', `${endpoint}/emails:send?api-version=2023-03-31`, body);
   if (!res.ok) throw new Error(`ACS ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  return res.headers.get('operation-location') || res.headers.get('x-ms-request-id') || 'accepted';
+  const json = await res.json().catch(() => ({}));
+  return json.id || null;
+}
+
+/** What ACS made of a message: NotStarted | Running | Succeeded | Failed | Canceled. */
+export async function acsStatus(operationId) {
+  const endpoint = acsReady();
+  const res = await acsRequest('GET', `${endpoint}/emails/operations/${operationId}?api-version=2023-03-31`);
+  if (!res.ok) throw new Error(`ACS status ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return res.json();
+}
+
+/**
+ * Close the loop on accepted messages. Anything ACS has finished with is either
+ * marked verified or flipped to failed with the provider's own reason, so the
+ * Settings screen never shows a bounced message as sent.
+ */
+export async function verifyDeliveries(limit = 25) {
+  if (config.mail.driver !== 'acs') return { checked: 0, confirmed: 0, bounced: 0 };
+  const { rows } = await q(
+    `SELECT id, provider_id, to_email FROM email_outbox
+      WHERE status = 'sent' AND provider_id IS NOT NULL AND verified_at IS NULL
+      ORDER BY sent_at LIMIT $1`,
+    [limit]
+  );
+  let confirmed = 0, bounced = 0;
+  for (const m of rows) {
+    let s;
+    try { s = await acsStatus(m.provider_id); }
+    catch { continue; }                       // transient: leave it for the next pass
+    if (s.status === 'Succeeded') {
+      await q(`UPDATE email_outbox SET verified_at = now() WHERE id = $1`, [m.id]);
+      confirmed++;
+    } else if (s.status === 'Failed' || s.status === 'Canceled') {
+      await q(
+        `UPDATE email_outbox SET status='failed', verified_at=now(), last_error=$2 WHERE id=$1`,
+        [m.id, `delivery ${s.status}: ${s.error?.message || 'no reason given'}`.slice(0, 500)]
+      );
+      bounced++;
+      console.error(`[mail] not delivered → ${m.to_email}: ${s.error?.message || s.status}`);
+    }
+    // NotStarted / Running are left alone; the next pass picks them up.
+  }
+  return { checked: rows.length, confirmed, bounced };
 }
 
 const esc = (s) =>
@@ -274,8 +324,9 @@ export async function flushOutbox(limit = 25) {
       continue;
     }
     try {
+      let providerId = null;
       if (acs) {
-        await acsSend({
+        providerId = await acsSend({
           to: m.to_email, toName: m.to_name,
           subject: m.subject, html: m.body_html, text: m.body_text
         });
@@ -288,7 +339,8 @@ export async function flushOutbox(limit = 25) {
           text: m.body_text
         });
       }
-      await q(`UPDATE email_outbox SET status='sent', attempts=attempts+1, sent_at=now() WHERE id=$1`, [m.id]);
+      await q(`UPDATE email_outbox SET status='sent', attempts=attempts+1, sent_at=now(), provider_id=$2 WHERE id=$1`,
+              [m.id, providerId]);
       sent++;
     } catch (e) {
       await q(`UPDATE email_outbox SET status=CASE WHEN attempts+1>=5 THEN 'failed' ELSE 'queued' END,

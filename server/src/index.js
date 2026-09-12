@@ -10,7 +10,7 @@ import { config } from './config.js';
 import { pool } from './lib/db.js';
 import { migrate } from './lib/migrate.js';
 import { ensureAdmin } from './lib/bootstrap.js';
-import { flushOutbox } from './lib/mailer.js';
+import { flushOutbox, verifyDeliveries } from './lib/mailer.js';
 import { AppError } from './lib/rules.js';
 
 import { authRouter } from './routes/auth.js';
@@ -86,7 +86,10 @@ app.use((err, _req, res, _next) => {
 const boot = async () => {
   await migrate();
   await ensureAdmin();
-  setInterval(() => flushOutbox().catch(() => {}), 60_000).unref();
+  setInterval(() => {
+    flushOutbox().catch(() => {});
+    verifyDeliveries().catch(() => {});
+  }, 60_000).unref();
   app.listen(config.port, () =>
     console.log(`UneeRooms listening on :${config.port}  (${config.env}, tz ${config.timezone}, mail ${config.mail.driver})`)
   );

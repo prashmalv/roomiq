@@ -56,7 +56,10 @@ export default function AdminSettings() {
 
   const flush = async () => {
     const r = await api.post('/api/admin/outbox/flush');
-    setFlash(`Mail queue processed — ${r.sent} sent, ${r.skipped} skipped, ${r.failed} failed.`);
+    setFlash(
+      `Mail queue processed — ${r.sent} sent, ${r.skipped} skipped, ${r.failed} failed.` +
+      (r.checked ? ` Delivery checked on ${r.checked}: ${r.confirmed} confirmed, ${r.bounced} not delivered.` : '')
+    );
     await load();
   };
 
@@ -76,7 +79,10 @@ export default function AdminSettings() {
               : 'requests awaiting a decision' },
           { label: 'Confirmed today', value: stats.today_confirmed, context: 'meetings on the floor' },
           { label: 'Next 7 days', value: stats.next7, context: 'bookings held or confirmed' },
-          { label: 'Mail failures', value: stats.mail_failed, context: stats.mail_failed ? 'check SMTP settings' : 'queue is healthy' }
+          { label: 'Mail delivered', value: stats.mail_delivered ?? 0,
+            context: stats.mail_failed
+              ? `${stats.mail_failed} could not be delivered`
+              : 'confirmed by the provider' }
         ]} />
       </div>
 
@@ -184,9 +190,10 @@ export default function AdminSettings() {
           <button className="btn btn-sec btn-sm" onClick={flush}>Process queue now</button>
         </div>
         <p>
-          Mail is written to the outbox first and sent second, so nothing is lost if SMTP is
-          down. <strong>Skipped</strong> means no transport is configured yet — set the SMTP
-          app settings and these become real emails.
+          Mail is written to the outbox first and sent second, so nothing is lost if the
+          transport is down. <strong>Delivered</strong> means the provider confirmed the
+          recipient's mail server accepted it, not merely that we handed it over;
+          <strong> skipped</strong> means no transport is configured.
         </p>
         {!mails ? <Loading /> : (
           <div className="table-wrap">
@@ -201,8 +208,11 @@ export default function AdminSettings() {
                     <td>
                       <span className="mono" style={{ letterSpacing: '0.14em', textTransform: 'uppercase',
                         color: m.status === 'sent' ? 'var(--good)' : m.status === 'failed' ? 'var(--bad)' : 'var(--ink-3)' }}>
-                        {m.status}
+                        {m.status === 'sent' && m.verified_at ? 'delivered' : m.status}
                       </span>
+                      {m.status === 'sent' && !m.verified_at && m.provider_id && (
+                        <div className="mono muted">accepted, awaiting confirmation</div>
+                      )}
                       {m.last_error && <div className="mono muted">{m.last_error}</div>}
                     </td>
                     <td className="mono muted">{new Date(m.created_at).toLocaleString('en-IN')}</td>

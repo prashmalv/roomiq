@@ -177,3 +177,15 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS bookings_contested_idx
   ON bookings (room_id, booking_date) WHERE status = 'contested';
+
+-- ------------------------------------------------- delivery verification ----
+-- A transport accepting a message is not the same as delivering it. ACS returns
+-- an operation id on acceptance and reports the outcome separately, so the id is
+-- kept and the outcome checked; otherwise a bounce would sit in the table
+-- labelled 'sent' forever, which is exactly the silent loss this table exists
+-- to prevent.
+ALTER TABLE email_outbox ADD COLUMN IF NOT EXISTS provider_id text;
+ALTER TABLE email_outbox ADD COLUMN IF NOT EXISTS verified_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS email_outbox_unverified_idx ON email_outbox (sent_at)
+  WHERE status = 'sent' AND provider_id IS NOT NULL AND verified_at IS NULL;

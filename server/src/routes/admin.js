@@ -4,7 +4,7 @@ import { q, audit } from '../lib/db.js';
 import { requireAuth, requireAdmin, hashPassword } from '../lib/auth.js';
 import { getSettings, updateSettings } from '../lib/settings.js';
 import { AppError, nowLocal } from '../lib/rules.js';
-import { queueMail, flushSoon, flushOutbox } from '../lib/mailer.js';
+import { queueMail, flushSoon, flushOutbox, verifyDeliveries } from '../lib/mailer.js';
 import { BOOKING_VIEW, loadBooking, shape } from './bookings.js';
 import { publicUser } from './auth.js';
 
@@ -287,7 +287,8 @@ adminRouter.patch('/settings', async (req, res, next) => {
 adminRouter.get('/outbox', async (req, res, next) => {
   try {
     const { rows } = await q(
-      `SELECT id, kind, to_email, to_name, subject, status, attempts, last_error, created_at, sent_at
+      `SELECT id, kind, to_email, to_name, subject, status, attempts, last_error, created_at, sent_at,
+              verified_at, provider_id
          FROM email_outbox ORDER BY created_at DESC LIMIT 100`
     );
     res.json({ mails: rows });
@@ -295,7 +296,13 @@ adminRouter.get('/outbox', async (req, res, next) => {
 });
 
 adminRouter.post('/outbox/flush', async (_req, res, next) => {
-  try { res.json(await flushOutbox(100)); } catch (e) { next(e); }
+  try {
+    const flushed = await flushOutbox(100);
+    // Ask the provider what actually became of recent messages, so "sent" on
+    // this screen means delivered rather than merely handed over.
+    const verified = await verifyDeliveries(100);
+    res.json({ ...flushed, ...verified });
+  } catch (e) { next(e); }
 });
 
 adminRouter.get('/stats', async (_req, res, next) => {
@@ -312,7 +319,8 @@ adminRouter.get('/stats', async (_req, res, next) => {
                                           AND booking_date BETWEEN $1 AND ($1::date + 6))::int AS next7,
          (SELECT count(*) FROM rooms WHERE is_active)::int                                  AS rooms,
          (SELECT count(*) FROM users WHERE is_active)::int                                  AS users,
-         (SELECT count(*) FROM email_outbox WHERE status='failed')::int                     AS mail_failed`,
+         (SELECT count(*) FROM email_outbox WHERE status='failed')::int                     AS mail_failed,
+         (SELECT count(*) FROM email_outbox WHERE status='sent' AND verified_at IS NOT NULL)::int AS mail_delivered`,
       [today]
     );
     const { rows: byRoom } = await q(
