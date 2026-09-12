@@ -88,7 +88,7 @@ const boot = async () => {
   await ensureAdmin();
   setInterval(() => flushOutbox().catch(() => {}), 60_000).unref();
   app.listen(config.port, () =>
-    console.log(`RoomIQ listening on :${config.port}  (${config.env}, tz ${config.timezone}, mail ${config.mail.driver})`)
+    console.log(`UneeRooms listening on :${config.port}  (${config.env}, tz ${config.timezone}, mail ${config.mail.driver})`)
   );
 };
 

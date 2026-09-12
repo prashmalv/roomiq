@@ -41,7 +41,7 @@ export const config = {
     secure: bool(process.env.SMTP_SECURE, false),
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
-    from: process.env.MAIL_FROM || 'RoomIQ <no-reply@uneecops.in>',
+    from: process.env.MAIL_FROM || 'UneeRooms <no-reply@uneecops.in>',
     adminFallback: (process.env.MAIL_ADMIN_FALLBACK || '').toLowerCase(),
     // Azure Communication Services: REST + access key, so there is no SMTP AUTH
     // to have enabled on a tenant and no mailbox password to rotate.

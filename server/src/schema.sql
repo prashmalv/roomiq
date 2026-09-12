@@ -1,5 +1,5 @@
 -- ============================================================================
--- RoomIQ — Conference Room Booking
+-- UneeRooms — Conference Room Booking
 -- Schema. Idempotent: safe to run on every boot.
 -- ============================================================================
 CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- gen_random_uuid()

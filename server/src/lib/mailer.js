@@ -33,7 +33,7 @@ async function acsSend({ to, toName, subject, html, text }) {
   const { acsEndpoint, acsKey, from } = config.mail;
   if (!acsEndpoint || !acsKey) throw new Error('ACS_ENDPOINT and ACS_ACCESS_KEY must both be set.');
 
-  // "RoomIQ <donotreply@x.azurecomm.net>" → the bare address ACS wants.
+  // "UneeRooms <donotreply@x.azurecomm.net>" → the bare address ACS wants.
   const senderAddress = (from.match(/<([^>]+)>/)?.[1] || from).trim();
   const path = '/emails:send?api-version=2023-03-31';
   const url = new URL(acsEndpoint + path);
@@ -101,8 +101,8 @@ function shell(heading, eyebrow, rows, bodyLines, cta) {
       : ''
   }
 </td></tr>
-<tr><td style="border-top:1px solid #D8DEE4;padding:16px 28px;font:400 11px/1.5 Arial,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:#7A8590">RoomIQ &nbsp;·&nbsp; ${esc(
-    config.mail.from.replace(/.*<|>.*/g, '') || 'RoomIQ'
+<tr><td style="border-top:1px solid #D8DEE4;padding:16px 28px;font:400 11px/1.5 Arial,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:#7A8590">UneeRooms &nbsp;·&nbsp; ${esc(
+    config.mail.from.replace(/.*<|>.*/g, '') || 'UneeRooms'
   )}</td></tr>
 </table></body></html>`;
 }
@@ -157,7 +157,7 @@ export const templates = {
     heading: 'This booking has been cancelled',
     rows: slotRows(b),
     lines: [b.decision_note ? `Note: ${b.decision_note}` : 'The slot is available again.'],
-    cta: { label: 'Open RoomIQ', url: `${config.publicUrl}/` }
+    cta: { label: 'Open UneeRooms', url: `${config.publicUrl}/` }
   }),
   booking_allocated: (b) => ({
     subject: `Room allocated — ${b.room_name}, ${fmtDate(b.booking_date)} ${b.start_time.slice(0, 5)}`,
@@ -173,7 +173,7 @@ export const templates = {
     heading: 'Your room is confirmed — no approval needed',
     rows: slotRows(b),
     lines: [
-      'The room was free, so RoomIQ confirmed this booking straight away under the senior leadership policy. Facilities have been notified for their records.',
+      'The room was free, so UneeRooms confirmed this booking straight away under the senior leadership policy. Facilities have been notified for their records.',
       'Open your booking pass if someone else is already sitting in the room.'
     ],
     cta: { label: 'Open booking pass', url: `${config.publicUrl}/pass/${b.pass_code}` }
@@ -212,7 +212,7 @@ export const templates = {
     cta: { label: 'Find another slot', url: `${config.publicUrl}/` }
   }),
   account_registered: (b) => ({
-    subject: 'Your RoomIQ account is ready',
+    subject: 'Your UneeRooms account is ready',
     eyebrow: 'Welcome',
     heading: 'You can now book meeting rooms',
     rows: [['Email', b.for_email], ['Role', 'Employee']],
@@ -220,10 +220,10 @@ export const templates = {
       'You signed up with your Uneecops work email, so your account is active straight away — no approval needed to sign in.',
       'Room requests you raise do go to facilities for approval, and you will be emailed either way.'
     ],
-    cta: { label: 'Open RoomIQ', url: `${config.publicUrl}/` }
+    cta: { label: 'Open UneeRooms', url: `${config.publicUrl}/` }
   }),
   account_created: (b) => ({
-    subject: 'Your RoomIQ account is ready',
+    subject: 'Your UneeRooms account is ready',
     eyebrow: 'Welcome',
     heading: 'You can now book meeting rooms',
     rows: [['Email', b.for_email], ['Temporary password', b.temp_password], ['Role', b.role]],

@@ -14,7 +14,7 @@ export default function Shell({ children }) {
         <div className="shell nav-in">
           <NavLink to="/" className="brand">
             <Logo />
-            <span className="wordmark">Room<span>IQ</span></span>
+            <span className="wordmark">Unee<span>Rooms</span></span>
           </NavLink>
           <nav className="nav-links">
             <NavLink to="/" end className={link}>Dashboard</NavLink>
@@ -44,7 +44,7 @@ export default function Shell({ children }) {
       <footer className="footer">
         <div className="shell footer-in">
           <span>{settings?.org_name || 'Uneecops Technologies Limited'}</span>
-          <span>RoomIQ · Conference room booking</span>
+          <span>UneeRooms · Conference room booking</span>
           <span>Bookable {settings?.work_start}–{settings?.work_end}</span>
           <span style={{ marginLeft: 'auto' }}>Signed in as {user.email}</span>
         </div>

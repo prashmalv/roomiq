@@ -173,7 +173,7 @@ export default function AdminSettings() {
             ))}
           </div>
           <p className="mono muted" style={{ marginTop: 'var(--s-4)' }}>
-            Source: RoomIQ booking register
+            Source: UneeRooms booking register
           </p>
         </aside>
       </div>

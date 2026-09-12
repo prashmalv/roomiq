@@ -1,4 +1,4 @@
-# RoomIQ — conference room booking
+# UneeRooms — conference room booking
 
 A single Azure web app that lets employees see what is free, book it in two clicks, and
 lets facilities approve, allocate and audit every reservation.
@@ -81,7 +81,7 @@ and errors, so a transport that stops working is visible rather than silent.
 Production sends through ACS with an **Azure-managed domain**, which Azure verifies itself
 — no DNS record, no mailbox, and no tenant-level SMTP AUTH to get enabled. The cost is the
 sender address: a generated `donotreply@<guid>.azurecomm.net`. Moving to
-`roomiq@uneecops.in` means verifying a custom domain on the same ACS resource; the
+`uneerooms@uneecops.in` means verifying a custom domain on the same ACS resource; the
 application does not change. ACS is driven by its access key over signed REST rather than
 its SMTP front door, because SMTP there additionally needs an Entra app registration.
 
@@ -253,16 +253,16 @@ short-circuit the unused branch of a ternary that calls `listKeys()`. Flipping
 `enableAcsEmail` to `false` on a stack whose ACS resources have been deleted may need the
 email block removed from the template rather than merely disabled.
 
-To send from `roomiq@uneecops.in` through a Microsoft 365 mailbox instead, deploy with
+To send from `uneerooms@uneecops.in` through a Microsoft 365 mailbox instead, deploy with
 `enableAcsEmail=false` and set these app settings — queued mail flushes on the next cycle:
 
 ```
 MAIL_DRIVER=smtp
 SMTP_HOST=smtp.office365.com
 SMTP_PORT=587
-SMTP_USER=roomiq@uneecops.in
+SMTP_USER=uneerooms@uneecops.in
 SMTP_PASS=<app password or client secret>
-MAIL_FROM=RoomIQ <roomiq@uneecops.in>
+MAIL_FROM=UneeRooms <uneerooms@uneecops.in>
 ```
 
 Microsoft 365 needs SMTP AUTH enabled on that mailbox, which many tenants block by default.

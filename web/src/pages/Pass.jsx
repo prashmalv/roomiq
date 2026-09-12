@@ -24,7 +24,7 @@ export default function Pass() {
         <Eyebrow>Booking pass</Eyebrow>
         <h1 style={{ margin: '12px 0 20px' }}>Pass not found</h1>
         <Notice tone="bad">{error}</Notice>
-        <p style={{ marginTop: 20 }}><Link to="/">Back to RoomIQ</Link></p>
+        <p style={{ marginTop: 20 }}><Link to="/">Back to UneeRooms</Link></p>
       </div>
     );
   }
@@ -72,13 +72,13 @@ export default function Pass() {
 
           <div className="btn-row no-print" style={{ marginTop: 'var(--s-5)' }}>
             <button className="btn btn-sec btn-sm" onClick={() => window.print()}>Print</button>
-            <Link className="btn btn-sec btn-sm" to="/" style={{ textDecoration: 'none' }}>Open RoomIQ</Link>
+            <Link className="btn btn-sec btn-sm" to="/" style={{ textDecoration: 'none' }}>Open UneeRooms</Link>
           </div>
         </div>
       </div>
 
       <p className="mono muted no-print" style={{ marginTop: 'var(--s-5)' }}>
-        Verified against the RoomIQ booking register · pass codes are unique and cannot be edited
+        Verified against the UneeRooms booking register · pass codes are unique and cannot be edited
       </p>
     </div>
   );

@@ -49,7 +49,7 @@ export default function Register() {
     <div className="center-page">
       <div className="left">
         <Logo plate />
-        <h1 style={{ marginTop: 16 }}>Create your<br />RoomIQ account.</h1>
+        <h1 style={{ marginTop: 16 }}>Create your<br />UneeRooms account.</h1>
         <p style={{ marginTop: 20 }}>
           Sign up with your Uneecops work email and you can book straight away — there is
           no account request to wait on. Room bookings themselves still go to facilities

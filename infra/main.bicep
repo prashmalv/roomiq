@@ -1,5 +1,5 @@
 /*============================================================================
-  RoomIQ — Azure infrastructure
+  UneeRooms — Azure infrastructure
   Deploys: Container Registry, Linux App Service (container), PostgreSQL
   Flexible Server, Log Analytics + Application Insights.
 
@@ -60,7 +60,7 @@ param smtpHost string = ''
 param smtpUser string = ''
 @secure()
 param smtpPass string = ''
-param mailFrom string = 'RoomIQ <no-reply@uneecops.in>'
+param mailFrom string = 'UneeRooms <no-reply@uneecops.in>'
 
 var registryCredentials = useManagedIdentityForAcr ? [] : [
   { name: 'DOCKER_REGISTRY_SERVER_USERNAME', value: acr.listCredentials().username }
@@ -178,7 +178,7 @@ var acsSettings = enableAcsEmail ? [
   { name: 'MAIL_DRIVER', value: 'acs' }
   { name: 'ACS_ENDPOINT', value: 'https://${comms.properties.hostName}' }
   { name: 'ACS_ACCESS_KEY', value: comms.listKeys().primaryKey }
-  { name: 'MAIL_FROM', value: 'RoomIQ <donotreply@${emailDomain.properties.fromSenderDomain}>' }
+  { name: 'MAIL_FROM', value: 'UneeRooms <donotreply@${emailDomain.properties.fromSenderDomain}>' }
 ] : [
   { name: 'MAIL_DRIVER', value: mailDriver }
   { name: 'MAIL_FROM', value: mailFrom }
