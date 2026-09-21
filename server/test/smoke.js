@@ -1,5 +1,9 @@
 /* End-to-end smoke test against a running server. node test/smoke.js [baseUrl] */
 import { DateTime } from 'luxon';
+// The booking dialog computes the end time in the browser and posts it, so a
+// bug in this helper reaches the API as a bad request. It is pure, so it is
+// checked here rather than left to manual clicking.
+import { addMinutes, minutesBetween } from '../../web/src/api.js';
 
 const BASE = process.argv[2] || 'http://localhost:8080';
 let pass = 0, fail = 0;
@@ -28,7 +32,17 @@ function session() {
 const emp = session();
 const adm = session();
 
-console.log(`\nRoomIQ smoke test → ${BASE}\n`);
+console.log(`\nUneeRooms smoke test → ${BASE}\n`);
+
+// ------------------------------------------------- client-side time maths --
+console.log('client time helpers');
+ok('a numeric duration adds correctly', addMinutes('15:00', 120) === '17:00', addMinutes('15:00', 120));
+// A <select> hands back a string; 900 + '120' once produced 02:00.
+ok('a duration arriving as a string still adds', addMinutes('15:00', '120') === '17:00', addMinutes('15:00', '120'));
+ok('a duration crossing the hour adds', addMinutes('10:15', '45') === '11:00', addMinutes('10:15', '45'));
+ok('the longest allowed booking adds', addMinutes('08:00', '240') === '12:00', addMinutes('08:00', '240'));
+ok('every offered duration ends after it starts', ['30','45','60','90','120','180','240']
+   .every((d) => minutesBetween('09:00', addMinutes('09:00', d)) > 0));
 
 // ---------------------------------------------------------------- auth ----
 console.log('auth');
@@ -262,9 +276,13 @@ r = await senior('POST', '/api/bookings', {
 ok('a busy room is refused rather than displacing the holder',
    r.status === 409 && r.body.error.code === 'SLOT_TAKEN', JSON.stringify(r.body));
 
+// Ask the API for a slot it considers free rather than assuming the hour after
+// freeSlot is available — it often is not, and that is not what is under test.
+r = await emp('GET', '/api/availability/suggestions?duration=60&attendees=2');
+const ordinarySlot = r.body.suggestions?.[0];
 r = await emp('POST', '/api/bookings', {
-  roomId: freeSlot.roomId, title: 'Ordinary request', attendees: 2,
-  date: freeSlot.date, start: freeSlot.end, end: DateTime.fromISO(`2000-01-01T${freeSlot.end}`).plus({ hours: 1 }).toFormat('HH:mm')
+  roomId: ordinarySlot.roomId, title: 'Ordinary request', attendees: 2,
+  date: ordinarySlot.date, start: ordinarySlot.start, end: ordinarySlot.end
 });
 ok('a non-senior employee is unaffected by the policy',
    r.status === 201 && r.body.booking.status === 'pending', JSON.stringify(r.body));

@@ -1,4 +1,4 @@
-name: Build and deploy RoomIQ
+name: Build and deploy UneeRooms
 
 on:
   push:

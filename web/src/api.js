@@ -58,7 +58,9 @@ export const minutesBetween = (a, b) => {
 };
 export const addMinutes = (t, n) => {
   const [h, m] = t.split(':').map(Number);
-  const v = h * 60 + m + n;
+  // Number(n): a <select> hands back a string, and `900 + '120'` is '900120',
+  // which silently became 02:00 instead of 17:00.
+  const v = h * 60 + m + Number(n);
   return `${String(Math.floor(v / 60) % 24).padStart(2, '0')}:${String(v % 60).padStart(2, '0')}`;
 };
 export const durationLabel = (mins) =>

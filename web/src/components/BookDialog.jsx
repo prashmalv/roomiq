@@ -31,8 +31,11 @@ export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
     api.get('/api/admin/users').then((d) => setPeople(d.users.filter((u) => u.is_active))).catch(() => {});
   }, [isAdmin]);
 
+  // A <select> reports type 'select-one', so keying off the input type alone
+  // left duration as a string. Numeric fields are named rather than sniffed.
+  const NUMERIC = new Set(['duration', 'attendees']);
   const set = (k) => (e) => {
-    const v = e.target.type === 'number' ? Number(e.target.value) : e.target.value;
+    const v = e.target.type === 'number' || NUMERIC.has(k) ? Number(e.target.value) : e.target.value;
     setForm((f) => ({ ...f, [k]: v }));
   };
 
