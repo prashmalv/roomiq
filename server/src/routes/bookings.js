@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { q, audit } from '../lib/db.js';
 import { requireAuth } from '../lib/auth.js';
 import { getSettings } from '../lib/settings.js';
-import { AppError, validateBookingRequest, bookingWindow, nowLocal, repeatDates } from '../lib/rules.js';
+import { AppError, validateBookingRequest, bookingWindow, nowLocal, todayISO, repeatDates } from '../lib/rules.js';
 import { passCode } from '../lib/passcode.js';
 import { queueMail, flushSoon, adminRecipients } from '../lib/mailer.js';
 
@@ -12,6 +12,7 @@ export const bookingsRouter = Router();
 export const BOOKING_VIEW = `
   SELECT b.*, r.name AS room_name, r.floor, r.location, r.capacity,
          ctd.n AS contested_n, ctd.people AS contested_people, blk.people AS blocked_people,
+         wl.pos AS waitlist_pos,
          uf.name AS for_name, uf.email AS for_email, uf.department AS for_department,
          uf.is_senior AS for_is_senior,
          ub.name AS by_name, ub.email AS by_email,
@@ -32,7 +33,13 @@ export const BOOKING_VIEW = `
         FROM bookings k JOIN users ku ON ku.id = k.booked_for
        WHERE b.status = 'contested' AND k.status IN ('pending','approved')
          AND k.room_id = b.room_id AND k.slot && b.slot
-    ) blk ON true`;
+    ) blk ON true
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int + 1 AS pos
+        FROM bookings w
+       WHERE b.status = 'waitlisted' AND w.status = 'waitlisted'
+         AND w.room_id = b.room_id AND w.slot && b.slot AND w.created_at < b.created_at
+    ) wl ON true`;
 
 export async function loadBooking(id) {
   const { rows } = await q(`${BOOKING_VIEW} WHERE b.id = $1`, [id]);
@@ -54,6 +61,7 @@ export const shape = (b, asAdmin = false) => ({
   requestedBy: { id: b.requested_by, name: b.by_name, email: b.by_email },
   decidedBy: b.decided_by_name || null,
   autoApproved: !!b.auto_approved,
+  waitlistPosition: b.status === 'waitlisted' ? b.waitlist_pos : null,
   decidedAt: b.decided_at,
   decisionNote: b.decision_note,
   passCode: b.pass_code,
@@ -73,7 +81,10 @@ const createSchema = z.object({
   start: z.string().regex(/^\d{2}:\d{2}$/),
   end: z.string().regex(/^\d{2}:\d{2}$/),
   bookedFor: z.string().uuid().optional(),  // admin only
-  repeat: z.enum(['none', 'daily', 'alternate']).default('none')
+  repeat: z.enum(['none', 'daily', 'alternate']).default('none'),
+  // Opt-in, and deliberately a second step: somebody who just wants *a* room
+  // should be told the slot is taken, not silently parked in a queue.
+  waitlist: z.boolean().default(false)
 });
 
 /** The pending or approved booking standing in the way of this slot, if any. */
@@ -87,6 +98,51 @@ async function blockingBooking(roomId, date, start, end) {
     [roomId, date, start, end]
   );
   return rows[0] || null;
+}
+
+/**
+ * A held slot has just been released. Hand it to the earliest waiting request.
+ *
+ * First come, first served on `created_at`, and seniority does not jump the
+ * queue — that was the explicit rule. The exclusion constraint is still the
+ * arbiter: if a candidate only partly overlaps what was freed, its insert loses
+ * and the next candidate is tried, so a half-free slot is never over-allocated.
+ */
+export async function promoteFromWaitlist(freed) {
+  const { rows } = await q(
+    `SELECT id FROM bookings
+      WHERE status = 'waitlisted' AND room_id = $1 AND slot && $2 AND booking_date >= $3
+      ORDER BY created_at
+      LIMIT 20`,
+    [freed.room_id, freed.slot, todayISO()]
+  );
+
+  for (const r of rows) {
+    try {
+      const { rowCount } = await q(
+        `UPDATE bookings
+            SET status='approved', decided_by=NULL, decided_at=now(), auto_approved=true,
+                decision_note='Allocated automatically from the waiting list when the room was released.'
+          WHERE id = $1 AND status = 'waitlisted'`,
+        [r.id]
+      );
+      if (!rowCount) continue;
+
+      const promoted = await loadBooking(r.id);
+      await audit(null, 'booking.waitlist_promote', 'booking', promoted.id,
+                  { released: freed.id, room: promoted.room_name, date: promoted.booking_date });
+      await queueMail('booking_from_waitlist',
+                      { name: promoted.for_name, email: promoted.for_email }, promoted, promoted.id);
+      for (const a of await adminRecipients())
+        await queueMail('booking_from_waitlist_notice', a, promoted, promoted.id);
+      flushSoon();
+      return promoted;
+    } catch (e) {
+      if (e.code === '23P01') continue;   // it did not actually fit; try the next
+      throw e;
+    }
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------- create ----- */
@@ -177,33 +233,44 @@ bookingsRouter.post('/', requireAuth, async (req, res, next) => {
            the person who asked first, but facilities can now see both and choose.
            A confirmed booking is settled and is never contested. */
         const blocker = await blockingBooking(body.roomId, date, body.start, body.end);
-        if (isSenior && !isAdmin && blocker && blocker.status === 'pending') {
+        if (body.waitlist && blocker) {
+          const { rows } = await insert('waitlisted', true);
+          created.push(await loadBooking(rows[0].id));
+        } else if (isSenior && !isAdmin && blocker && blocker.status === 'pending') {
           const { rows } = await insert('contested', true);
           created.push(await loadBooking(rows[0].id));
         } else {
           skipped.push({
             date,
-            reason: `${room.name} is already held for part of ${body.start}–${body.end} on ${date}.`
+            reason: `${room.name} is already held for part of ${body.start}–${body.end} on ${date}.`,
+            // The client offers the queue only when there is something to wait for.
+            canWaitlist: !!blocker
           });
         }
       }
     }
 
     if (!created.length) {
-      // One date asked for, one date refused — the single-booking 409 as before.
+      // One date asked for, one date refused — the single-booking 409 as before,
+      // now carrying whether joining the queue is an option.
       throw new AppError(409, 'SLOT_TAKEN',
-        skipped[0]?.reason || 'That slot is no longer available. Pick another.');
+        skipped[0]?.reason || 'That slot is no longer available. Pick another.',
+        { canWaitlist: skipped.some((x) => x.canWaitlist) });
     }
 
     for (const b of created) {
       const contested = b.status === 'contested';
+      const waiting = b.status === 'waitlisted';
       await audit(req.user.id,
-                  contested ? 'booking.contest'
+                  waiting ? 'booking.waitlist'
+                  : contested ? 'booking.contest'
                   : b.auto_approved ? 'booking.auto_approve'
                   : b.status === 'approved' ? 'booking.allocate' : 'booking.request',
                   'booking', b.id, { room: room.name, date: b.booking_date, start: body.start });
 
-      if (contested) {
+      if (waiting) {
+        await queueMail('booking_waitlisted', { name: b.for_name, email: b.for_email }, b, b.id);
+      } else if (contested) {
         await queueMail('booking_contested_ack', { name: b.for_name, email: b.for_email }, b, b.id);
         for (const a of await adminRecipients())
           await queueMail('booking_contested', a, b, b.id);
@@ -271,7 +338,7 @@ bookingsRouter.post('/:id/cancel', requireAuth, async (req, res, next) => {
     const isOwner = b.booked_for === req.user.id || b.requested_by === req.user.id;
     if (req.user.role !== 'admin' && !isOwner)
       throw new AppError(403, 'FORBIDDEN', 'This booking is not yours.');
-    if (!['pending', 'approved', 'contested'].includes(b.status))
+    if (!['pending', 'approved', 'contested', 'waitlisted'].includes(b.status))
       throw new AppError(400, 'NOT_CANCELLABLE', `This booking is already ${b.status}.`);
 
     await q(
@@ -286,8 +353,14 @@ bookingsRouter.post('/:id/cancel', requireAuth, async (req, res, next) => {
     if (req.user.role !== 'admin')
       for (const a of await adminRecipients())
         await queueMail('booking_cancelled', a, after, after.id);
+
+    // The released slot goes to whoever asked for it first, if anybody did.
+    const promoted = b.status === 'waitlisted' ? null : await promoteFromWaitlist(after);
     flushSoon();
 
-    res.json({ booking: shape(after) });
+    res.json({
+      booking: shape(after),
+      ...(promoted ? { reallocatedTo: { name: promoted.for_name, date: promoted.booking_date } } : {})
+    });
   } catch (e) { next(e); }
 });

@@ -23,6 +23,8 @@ export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
   const [people, setPeople] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Set when the slot is taken but joining the queue is possible.
+  const [offerWaitlist, setOfferWaitlist] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -64,9 +66,9 @@ export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
   const room = rooms.find((r) => r.id === form.roomId);
   const overCapacity = room && form.attendees > room.capacity;
 
-  const submit = async (e) => {
+  const submit = async (e, waitlist = false) => {
     e.preventDefault();
-    setBusy(true); setError('');
+    setBusy(true); setError(''); if (!waitlist) setOfferWaitlist(false);
     try {
       const res = await api.post('/api/bookings', {
         roomId: form.roomId,
@@ -77,11 +79,13 @@ export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
         start: form.start,
         end,
         repeat: form.repeat,
+        ...(waitlist ? { waitlist: true } : {}),
         ...(isAdmin && form.bookedFor ? { bookedFor: form.bookedFor } : {})
       });
       onBooked(res.booking, res.series);
     } catch (err) {
       setError(err.message);
+      setOfferWaitlist(!!err.canWaitlist);
     } finally {
       setBusy(false);
     }
@@ -185,6 +189,18 @@ export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
 
         {overCapacity && <Notice tone="bad">{room.name} seats {room.capacity}. Choose a larger room.</Notice>}
         {error && <Notice tone="bad">{error}</Notice>}
+        {offerWaitlist && (
+          <div style={{ marginBottom: 12 }}>
+            <p className="mono muted" style={{ marginBottom: 8 }}>
+              You can wait for it instead. Nothing is reserved, but if the holder releases
+              the room it goes to whoever joined the list first — automatically.
+            </p>
+            <button type="button" className="btn btn-sec btn-sm" disabled={busy}
+                    onClick={(e) => submit(e, true)}>
+              {busy ? 'Joining…' : 'Join the waiting list'}
+            </button>
+          </div>
+        )}
         {!isAdmin && (
           <p className="mono" style={{ color: 'var(--ink-3)', marginTop: 12 }}>
             You can book up to {win.maxDate}. Later dates need an admin.

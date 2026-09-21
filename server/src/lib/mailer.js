@@ -261,6 +261,39 @@ export const templates = {
     ],
     cta: { label: 'Find another slot', url: `${config.publicUrl}/` }
   }),
+  booking_waitlisted: (b) => ({
+    subject: `On the waiting list — ${b.room_name}, ${fmtDate(b.booking_date)} ${b.start_time.slice(0, 5)}`,
+    eyebrow: 'Waiting for this slot',
+    heading: 'You are on the waiting list',
+    rows: slotRows(b),
+    lines: [
+      'The room is taken for that time, so nothing is confirmed. If the holder releases it, the slot goes to whoever joined the list first — and if that is you, it is allocated straight away and you are emailed.',
+      'Nothing is reserved in the meantime, so book a different slot too if the meeting has to happen.'
+    ],
+    cta: { label: 'Open UneeRooms', url: `${config.publicUrl}/` }
+  }),
+  booking_from_waitlist: (b) => ({
+    subject: `Room now yours — ${b.room_name}, ${fmtDate(b.booking_date)} ${b.start_time.slice(0, 5)}`,
+    eyebrow: 'Released and allocated',
+    heading: 'The room came free and it is yours',
+    rows: slotRows(b),
+    lines: [
+      'Whoever held this slot released it, and you were first on the waiting list, so it has been confirmed in your name automatically. No approval was needed.',
+      'If you no longer need it, cancel it so the next person on the list can have it.'
+    ],
+    cta: { label: 'Open booking pass', url: `${config.publicUrl}/pass/${b.pass_code}` }
+  }),
+  booking_from_waitlist_notice: (b) => ({
+    subject: `Reallocated — ${b.room_name}, ${fmtDate(b.booking_date)} ${b.start_time.slice(0, 5)} to ${b.for_name}`,
+    eyebrow: 'No action needed',
+    heading: 'A released room went to the waiting list',
+    rows: slotRows(b).concat([['Decision', 'Approved by system']]),
+    lines: [
+      'The slot was released and handed to the earliest waiting request, first come first served. It shows in the register as approved by system.',
+      'Cancel it there if it needs to be undone.'
+    ],
+    cta: { label: 'Open approvals', url: `${config.publicUrl}/admin/approvals` }
+  }),
   account_registered: (b) => ({
     subject: 'Your UneeRooms account is ready',
     eyebrow: 'Welcome',

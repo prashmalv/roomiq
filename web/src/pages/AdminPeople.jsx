@@ -14,11 +14,25 @@ export default function AdminPeople() {
   const [error, setError] = useState('');
   const [reset, setReset] = useState(null);
   const [newPass, setNewPass] = useState('');
+  const [search, setSearch] = useState('');
+  const [role, setRole] = useState('');
+  const [meta, setMeta] = useState({ total: 0, shown: 0, limit: 100 });
 
   const load = useCallback(async () => {
-    setUsers((await api.get('/api/admin/users')).users);
-  }, []);
-  useEffect(() => { load(); }, [load]);
+    const qs = new URLSearchParams();
+    if (search.trim()) qs.set('q', search.trim());
+    if (role) qs.set('role', role);
+    const d = await api.get(`/api/admin/users?${qs}`);
+    setUsers(d.users);
+    setMeta({ total: d.total, shown: d.shown, limit: d.limit });
+  }, [search, role]);
+
+  // The directory grows with every sign-up, so searching is server-side and
+  // debounced rather than filtering a list the browser had to download first.
+  useEffect(() => {
+    const t = setTimeout(() => { load(); }, 250);
+    return () => clearTimeout(t);
+  }, [load]);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -65,12 +79,41 @@ export default function AdminPeople() {
         booking horizon and no access to restricted rooms.
       </p>
 
+      <div className="filters" style={{ marginTop: 'var(--s-6)' }}>
+        <label className="field" style={{ minWidth: 280 }}><span>Search</span>
+          <input value={search} onChange={(e) => setSearch(e.target.value)}
+                 placeholder="Name, email or department" autoFocus />
+        </label>
+        <label className="field"><span>Role</span>
+          <select value={role} onChange={(e) => setRole(e.target.value)}>
+            <option value="">Everyone</option>
+            <option value="employee">Employees</option>
+            <option value="admin">Administrators</option>
+          </select>
+        </label>
+        {(search || role) && (
+          <button type="button" className="btn btn-sec btn-sm"
+                  onClick={() => { setSearch(''); setRole(''); }}>Clear</button>
+        )}
+      </div>
+
       {flash && <div style={{ marginTop: 'var(--s-5)' }}><Notice tone="good">{flash}</Notice></div>}
       {error && <div style={{ marginTop: 'var(--s-5)' }}><Notice tone="bad">{error}</Notice></div>}
 
       <div className="split section">
         <section>
-          {!users ? <Loading /> : (
+          {users && (
+            <p className="mono muted" style={{ marginBottom: 'var(--s-3)' }}>
+              {meta.total === 0
+                ? 'Nobody matches that search.'
+                : meta.shown < meta.total
+                  ? `Showing ${meta.shown} of ${meta.total} — narrow the search to see the rest.`
+                  : `${meta.total} ${meta.total === 1 ? 'person' : 'people'}`}
+            </p>
+          )}
+          {!users ? <Loading /> : users.length === 0 ? (
+            <p className="muted">No match. Try part of a name, an email or a department.</p>
+          ) : (
             <div className="table-wrap">
               <table>
                 <thead>

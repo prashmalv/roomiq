@@ -5,7 +5,7 @@ import { requireAuth, requireAdmin, hashPassword } from '../lib/auth.js';
 import { getSettings, updateSettings } from '../lib/settings.js';
 import { AppError, nowLocal } from '../lib/rules.js';
 import { queueMail, flushSoon, flushOutbox, verifyDeliveries } from '../lib/mailer.js';
-import { BOOKING_VIEW, loadBooking, shape } from './bookings.js';
+import { BOOKING_VIEW, loadBooking, shape, promoteFromWaitlist } from './bookings.js';
 import { publicUser } from './auth.js';
 
 export const adminRouter = Router();
@@ -44,7 +44,7 @@ async function decide(req, res, next, decision) {
       .parse(req.body || {}).note;
     const b = await loadBooking(req.params.id);
     if (!b) throw new AppError(404, 'NOT_FOUND', 'Booking not found.');
-    if (!['pending', 'contested'].includes(b.status))
+    if (!['pending', 'contested', 'waitlisted'].includes(b.status))
       throw new AppError(400, 'NOT_PENDING', `This request is already ${b.status}.`);
     if (decision === 'rejected' && !note)
       throw new AppError(400, 'NOTE_REQUIRED', 'Please give a reason so the requester knows why.');
@@ -90,8 +90,16 @@ async function decide(req, res, next, decision) {
       }
     }
 
+    // Declining frees the slot exactly as a cancellation does.
+    const promoted = decision === 'rejected' && b.status !== 'waitlisted'
+      ? await promoteFromWaitlist(after)
+      : null;
+
     flushSoon();
-    res.json({ booking: shape(after, true) });
+    res.json({
+      booking: shape(after, true),
+      ...(promoted ? { reallocatedTo: { name: promoted.for_name, date: promoted.booking_date } } : {})
+    });
   } catch (e) { next(e); }
 }
 
@@ -182,14 +190,32 @@ adminRouter.delete('/rooms/:id/access/:userId', async (req, res, next) => {
 /* =============================================================== users ==== */
 adminRouter.get('/users', async (req, res, next) => {
   try {
+    const search = req.query.q ? `%${String(req.query.q).trim()}%` : null;
+    const role = ['employee', 'admin'].includes(String(req.query.role)) ? String(req.query.role) : null;
+    const senior = req.query.senior === undefined ? null : req.query.senior === 'true';
+    const active = req.query.active === undefined ? null : req.query.active === 'true';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+
+    const where = `WHERE ($1::text IS NULL OR u.name ILIKE $1 OR u.email ILIKE $1 OR u.department ILIKE $1)
+                     AND ($2::text IS NULL OR u.role = $2)
+                     AND ($3::boolean IS NULL OR u.is_senior = $3)
+                     AND ($4::boolean IS NULL OR u.is_active = $4)`;
+    const args = [search, role, senior, active];
+
     const { rows } = await q(
       `SELECT u.id, u.name, u.email, u.role, u.department, u.is_active, u.is_senior, u.created_at,
               count(b.id) FILTER (WHERE b.status IN ('pending','approved')
                                     AND b.booking_date >= current_date)::int AS upcoming
          FROM users u LEFT JOIN bookings b ON b.booked_for = u.id
-        GROUP BY u.id ORDER BY u.role, u.name`
+         ${where}
+        GROUP BY u.id ORDER BY u.role, u.name
+        LIMIT $5`,
+      [...args, limit]
     );
-    res.json({ users: rows });
+    // Total ignores the limit, so the UI can say when a search needs narrowing.
+    const { rows: [{ n }] } = await q(`SELECT count(*)::int AS n FROM users u ${where}`, args);
+
+    res.json({ users: rows, total: n, shown: rows.length, limit });
   } catch (e) { next(e); }
 });
 
@@ -314,6 +340,8 @@ adminRouter.get('/stats', async (_req, res, next) => {
          (SELECT count(*) FROM bookings b JOIN users u ON u.id = b.booked_for
            WHERE b.status='pending' AND u.is_senior)::int                                  AS pending_senior,
          (SELECT count(*) FROM bookings WHERE status='contested')::int                      AS contested,
+         (SELECT count(*) FROM bookings WHERE status='waitlisted'
+                                          AND booking_date >= current_date)::int              AS waitlisted,
          (SELECT count(*) FROM bookings WHERE status='approved' AND booking_date = $1)::int AS today_confirmed,
          (SELECT count(*) FROM bookings WHERE status IN ('pending','approved')
                                           AND booking_date BETWEEN $1 AND ($1::date + 6))::int AS next7,

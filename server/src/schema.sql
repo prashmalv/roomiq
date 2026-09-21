@@ -189,3 +189,24 @@ ALTER TABLE email_outbox ADD COLUMN IF NOT EXISTS verified_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS email_outbox_unverified_idx ON email_outbox (sent_at)
   WHERE status = 'sent' AND provider_id IS NOT NULL AND verified_at IS NULL;
+
+-- ------------------------------------------------------------ waitlist -----
+-- Someone who wants a slot that is already taken. Like 'contested' it sits
+-- outside the exclusion constraint, so it holds nothing; unlike 'contested' it
+-- is resolved by the clock rather than by an administrator — when the holder
+-- releases the room the earliest waiting request is allocated automatically.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'bookings_status_check'
+       AND pg_get_constraintdef(oid) LIKE '%waitlisted%'
+  ) THEN
+    ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_status_check;
+    ALTER TABLE bookings ADD CONSTRAINT bookings_status_check
+      CHECK (status IN ('pending','approved','rejected','cancelled','contested','waitlisted'));
+  END IF;
+END $$;
+
+-- First come, first served: the queue is ordered by when the request was filed.
+CREATE INDEX IF NOT EXISTS bookings_waitlist_idx
+  ON bookings (room_id, booking_date, created_at) WHERE status = 'waitlisted';

@@ -10,7 +10,7 @@ export default function AdminApprovals() {
   const [from, setFrom] = useState(todayISO());
   const [search, setSearch] = useState('');
   const [rows, setRows] = useState(null);
-  const [counts, setCounts] = useState({ pending: 0, pending_senior: 0, contested: 0 });
+  const [counts, setCounts] = useState({ pending: 0, pending_senior: 0, contested: 0, waitlisted: 0 });
   const [reject, setReject] = useState(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -25,6 +25,7 @@ export default function AdminApprovals() {
     if (search.trim()) qs.set('q', search.trim());
     if (queue === 'leadership') qs.set('senior', 'true');
     if (queue === 'clashes') { qs.set('status', 'contested'); qs.delete('from'); }
+    if (queue === 'waiting') { qs.set('status', 'waitlisted'); qs.delete('from'); }
     const [d, st] = await Promise.all([
       api.get(`/api/admin/bookings?${qs}`),
       api.get('/api/admin/stats').catch(() => null)
@@ -63,7 +64,9 @@ export default function AdminApprovals() {
         same time while you decide. Approving or declining emails the requester.
         Senior leadership requests are pinned to the top of the queue and have their own
         tab, so they cannot scroll out of sight. A row in <strong>red</strong> means two
-        live requests want the same slot — decide that one before the rest.
+        live requests want the same slot — decide that one before the rest. The
+        <strong> waiting list</strong> needs no decision from you: when a holder releases a
+        room it goes to the earliest waiting request on its own.
       </p>
 
       <div className="tabs" style={{ marginTop: 'var(--s-6)' }}>
@@ -82,6 +85,11 @@ export default function AdminApprovals() {
           Clashes
           {counts.contested > 0 && <span className="tab-n">{counts.contested}</span>}
         </button>
+        <button type="button" className={`tab tab-senior${queue === 'waiting' ? ' on' : ''}`}
+                onClick={() => setQueue('waiting')}>
+          Waiting list
+          {counts.waitlisted > 0 && <span className="tab-n">{counts.waitlisted}</span>}
+        </button>
       </div>
 
       <div className="filters" style={{ marginTop: 'var(--s-4)' }}>
@@ -91,6 +99,7 @@ export default function AdminApprovals() {
             <option value="approved">Approved</option>
             <option value="rejected">Declined</option>
             <option value="contested">Contested</option>
+            <option value="waitlisted">Waiting list</option>
             <option value="cancelled">Cancelled</option>
             <option value="all">All</option>
           </select>
@@ -114,6 +123,8 @@ export default function AdminApprovals() {
               ? 'No senior leadership requests match these filters.'
               : queue === 'clashes'
                 ? 'No slot is being contested. Nothing to arbitrate.'
+              : queue === 'waiting'
+                ? 'Nobody is waiting on a taken slot.'
                 : 'Nothing matches these filters. The queue is clear.'}
           </p>
         ) : (
@@ -164,6 +175,9 @@ export default function AdminApprovals() {
                         <div className="mono" style={{ color: 'var(--cat-2)', marginTop: 4 }}>
                           Approved by system
                         </div>
+                      )}
+                      {b.status === 'waitlisted' && (
+                        <div className="mono muted">number {b.waitlistPosition} in the queue</div>
                       )}
                       {b.decisionNote && <div className="mono muted">{b.decisionNote}</div>}
                     </td>

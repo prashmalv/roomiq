@@ -389,6 +389,92 @@ r = await junior('POST', '/api/bookings', {
 });
 ok('a non-repeating booking still returns no series', r.status === 201 && r.body.series === undefined);
 
+// -------------------------------------------------------- directory ------
+console.log('\ndirectory search');
+r = await adm('GET', `/api/admin/users?q=smoke.leader.${stamp}`);
+ok('an admin can search people by email', r.status === 200 && r.body.users.length === 1,
+   JSON.stringify(r.body.users?.map((u) => u.email)));
+
+r = await adm('GET', '/api/admin/users?q=Smoke');
+ok('search matches on name too', r.body.users.length >= 2, `${r.body.users?.length} matched`);
+
+r = await adm('GET', '/api/admin/users?q=zzz-nobody-has-this-name');
+ok('a search with no match returns nothing rather than everything',
+   r.body.users.length === 0 && r.body.total === 0, JSON.stringify(r.body));
+
+r = await adm('GET', '/api/admin/users?role=admin');
+ok('people can be filtered to administrators', r.body.users.every((u) => u.role === 'admin'));
+
+r = await adm('GET', '/api/admin/users?limit=2');
+ok('the list is capped and reports the true total',
+   r.body.users.length === 2 && r.body.total > 2, JSON.stringify({ shown: r.body.shown, total: r.body.total }));
+
+// --------------------------------------------------------- waiting list --
+console.log('\nwaiting list');
+const first = session();
+const second = session();
+r = await first('POST', '/api/auth/register', { name: 'Smoke First', email: `smoke.first.${stamp}@uneecops.in`, password: 'Testing@123' });
+ok('a first waiter can sign up', r.status === 201);
+r = await second('POST', '/api/auth/register', { name: 'Smoke Second', email: `smoke.second.${stamp}@uneecops.in`, password: 'Testing@123' });
+ok('a second waiter can sign up', r.status === 201);
+
+r = await junior('GET', '/api/rooms');
+const wlRoom = r.body.rooms.filter((x) => x.can_book)[2];
+const wlDate = DateTime.now().setZone('Asia/Kolkata').plus({ days: 4 }).toISODate();
+
+r = await junior('POST', '/api/bookings', {
+  roomId: wlRoom.id, title: 'Client meeting', attendees: 2, date: wlDate, start: '13:00', end: '14:00'
+});
+const held = r.body.booking;
+r = await adm('POST', `/api/admin/bookings/${held.id}/approve`);
+ok('the slot is confirmed to its holder', r.status === 200 && r.body.booking.status === 'approved');
+
+r = await first('POST', '/api/bookings', {
+  roomId: wlRoom.id, title: 'First in line', attendees: 2, date: wlDate, start: '13:00', end: '14:00'
+});
+ok('a taken slot is refused but offers the waiting list',
+   r.status === 409 && r.body.error.canWaitlist === true, JSON.stringify(r.body));
+
+r = await first('POST', '/api/bookings', {
+  roomId: wlRoom.id, title: 'First in line', attendees: 2, date: wlDate, start: '13:00', end: '14:00', waitlist: true
+});
+ok('joining the waiting list is a separate, explicit step',
+   r.status === 201 && r.body.booking.status === 'waitlisted', JSON.stringify(r.body));
+ok('the first waiter is told they are first', r.body.booking.waitlistPosition === 1, JSON.stringify(r.body.booking.waitlistPosition));
+const waiterOne = r.body.booking;
+
+await new Promise((res) => setTimeout(res, 1100));   // keep created_at ordering unambiguous
+r = await second('POST', '/api/bookings', {
+  roomId: wlRoom.id, title: 'Second in line', attendees: 2, date: wlDate, start: '13:00', end: '14:00', waitlist: true
+});
+ok('a second waiter queues behind the first', r.body.booking.waitlistPosition === 2, JSON.stringify(r.body.booking.waitlistPosition));
+const waiterTwo = r.body.booking;
+
+r = await adm('GET', '/api/admin/stats');
+ok('the waiting list has its own count', r.body.stats.waitlisted >= 2, JSON.stringify(r.body.stats.waitlisted));
+
+r = await junior('POST', `/api/bookings/${held.id}/cancel`, { note: 'client meeting called off' });
+ok('releasing the room reallocates it', r.status === 200 && !!r.body.reallocatedTo, JSON.stringify(r.body.reallocatedTo));
+ok('the room goes to whoever asked first, not whoever is senior',
+   r.body.reallocatedTo?.name === 'Smoke First', JSON.stringify(r.body.reallocatedTo));
+
+r = await first('GET', `/api/bookings/${waiterOne.id}`);
+ok('the first waiter now holds a confirmed booking',
+   r.body.booking.status === 'approved' && r.body.booking.autoApproved === true, JSON.stringify(r.body.booking.status));
+ok('the reallocation is recorded as a system decision', r.body.booking.decidedBy === null);
+
+r = await second('GET', `/api/bookings/${waiterTwo.id}`);
+ok('the second waiter keeps waiting rather than being dropped', r.body.booking.status === 'waitlisted');
+ok('the second waiter moves up the queue', r.body.booking.waitlistPosition === 1, JSON.stringify(r.body.booking.waitlistPosition));
+
+r = await adm('GET', '/api/admin/outbox');
+ok('the waiting list acknowledged both joiners', r.body.mails.filter((m) => m.kind === 'booking_waitlisted').length >= 2);
+ok('the reallocated employee was emailed', r.body.mails.some((m) => m.kind === 'booking_from_waitlist'));
+ok('facilities were told about the reallocation', r.body.mails.some((m) => m.kind === 'booking_from_waitlist_notice'));
+
+r = await second('POST', `/api/bookings/${waiterTwo.id}/cancel`, {});
+ok('a waiter can leave the queue', r.status === 200 && r.body.booking.status === 'cancelled');
+
 // -------------------------------------------------------------- report ----
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

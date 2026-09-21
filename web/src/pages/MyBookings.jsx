@@ -29,9 +29,11 @@ export default function MyBookings() {
   const doCancel = async () => {
     setBusy(true); setError('');
     try {
-      await api.post(`/api/bookings/${cancelling.id}/cancel`, { note: note.trim() || undefined });
+      const r = await api.post(`/api/bookings/${cancelling.id}/cancel`, { note: note.trim() || undefined });
       setCancelling(null); setNote('');
-      setFlash('Booking cancelled. The slot is free again and everyone involved has been emailed.');
+      setFlash(r.reallocatedTo
+        ? `Booking cancelled. ${r.reallocatedTo.name} was first on the waiting list, so the room has gone to them automatically and everyone has been emailed.`
+        : 'Booking cancelled. The slot is free again and everyone involved has been emailed.');
       await load();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   };
@@ -42,7 +44,9 @@ export default function MyBookings() {
       <h1 style={{ marginTop: 12 }}>My bookings</h1>
       <p style={{ marginTop: 12 }}>
         Every confirmed booking carries a pass. If someone is already sitting in the room,
-        open the pass and show it — it names the room, the slot and you.
+        open the pass and show it — it names the room, the slot and you. If a meeting falls
+        through, <strong>release</strong> the room: anyone waiting for that slot gets it
+        automatically, earliest request first.
       </p>
 
       <div className="filters" style={{ marginTop: 'var(--s-6)' }}>
@@ -83,7 +87,13 @@ export default function MyBookings() {
                       {b.bookedFor.id !== user.id && <div className="mono muted">for {b.bookedFor.name}</div>}
                       {b.requestedBy.id !== user.id && <div className="mono muted">by {b.requestedBy.name}</div>}
                     </td>
-                    <td><StatusChip status={b.status} /></td>
+                    <td>
+                      <StatusChip status={b.status} />
+                      {b.status === 'waitlisted' && (
+                        <div className="mono muted">number {b.waitlistPosition} in the queue</div>
+                      )}
+                      {b.autoApproved && <div className="mono" style={{ color: 'var(--cat-2)' }}>by system</div>}
+                    </td>
                     <td className="mono muted">
                       {b.decidedBy ? `${b.decidedBy}` : '—'}
                       {b.decisionNote ? <div>{b.decisionNote}</div> : null}
@@ -94,8 +104,10 @@ export default function MyBookings() {
                           <Link className="btn btn-sec btn-sm" to={`/pass/${b.passCode}`}
                                 style={{ textDecoration: 'none' }}>Pass</Link>
                         )}
-                        {['pending', 'approved'].includes(b.status) && (
-                          <button className="btn btn-danger btn-sm" onClick={() => setCancelling(b)}>Cancel</button>
+                        {['pending', 'approved', 'contested', 'waitlisted'].includes(b.status) && (
+                          <button className="btn btn-danger btn-sm" onClick={() => setCancelling(b)}>
+                            {b.status === 'approved' ? 'Release' : b.status === 'waitlisted' ? 'Leave queue' : 'Cancel'}
+                          </button>
                         )}
                       </div>
                     </td>
@@ -121,7 +133,13 @@ export default function MyBookings() {
             </>
           }
         >
-          <p>The slot is released immediately and a cancellation email goes out.</p>
+          <p>
+            {cancelling.status === 'approved'
+              ? 'The room is released immediately. If anyone is on the waiting list for this slot, the earliest of them gets it automatically and is emailed.'
+              : cancelling.status === 'waitlisted'
+                ? 'You will be taken off the waiting list for this slot. Nothing else changes.'
+                : 'The slot is released immediately and a cancellation email goes out.'}
+          </p>
           <Field label="Reason (optional)">
             <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={300}
                    placeholder="Meeting moved to next week" />

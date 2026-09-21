@@ -5,13 +5,21 @@ import { q, audit } from '../lib/db.js';
 import { checkPassword, hashPassword, issueSession, clearSession, requireAuth } from '../lib/auth.js';
 import { AppError, assertCanRegister, bookingWindow } from '../lib/rules.js';
 import { getSettings } from '../lib/settings.js';
+import { config } from '../config.js';
 import { queueMail, flushSoon } from '../lib/mailer.js';
 
 export const authRouter = Router();
 
 const loginLimit = rateLimit({ windowMs: 10 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
-// Sign-up is cheap to abuse and rare to use legitimately, so it is far tighter.
-const registerLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false });
+// Sign-up is cheap to abuse and rare to use legitimately, so it is far tighter
+// than sign-in. Outside production the cap is loosened: the smoke suite creates
+// several accounts per run and would otherwise lock itself out after two runs.
+const registerLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: config.env === 'production' ? 10 : 200,
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 authRouter.post('/login', loginLimit, async (req, res, next) => {
   try {

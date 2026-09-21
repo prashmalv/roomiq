@@ -77,7 +77,8 @@ app.use((err, _req, res, _next) => {
     error: {
       code: err.code || 'INTERNAL',
       message: status >= 500 ? 'Something went wrong on our side.' : err.message,
-      ...(err.maxDate ? { maxDate: err.maxDate } : {})
+      ...(err.maxDate ? { maxDate: err.maxDate } : {}),
+      ...(err.canWaitlist ? { canWaitlist: true } : {})
     }
   });
 });

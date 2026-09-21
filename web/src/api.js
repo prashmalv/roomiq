@@ -11,6 +11,7 @@ async function call(method, path, body) {
     const err = new Error(data?.error?.message || `Request failed (${res.status})`);
     err.code = data?.error?.code;
     err.status = res.status;
+    err.canWaitlist = !!data?.error?.canWaitlist;
     throw err;
   }
   return data;
@@ -77,6 +78,8 @@ export const bookingFlash = (booking, series) => {
       ? `${head} Skipped ${series.skipped.map((s) => s.date).join(', ')} — already taken.`
       : head;
   }
+  if (booking.status === 'waitlisted')
+    return `You are number ${booking.waitlistPosition} on the waiting list for ${slot} on ${booking.date}. Nothing is reserved — if the room is released it goes to whoever joined first.`;
   if (booking.status === 'contested')
     return `${slot} on ${booking.date} is already claimed by an undecided request. Yours has gone to facilities alongside it — you will be emailed once they decide.`;
   if (booking.status === 'approved')

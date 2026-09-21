@@ -178,6 +178,7 @@ td.right, th.right { text-align: right; }
 .chip-rejected  { color: var(--bad);   border-color: var(--bad); }
 .chip-cancelled { color: var(--ink-3); border-color: var(--rule); }
 .chip-contested { color: var(--bad);   border-color: var(--bad); }
+.chip-waitlisted { color: var(--cat-4); border-color: var(--cat-4); }
 
 /* ------------------------------------------------------------- day grid ---- */
 .daygrid { border: 1px solid var(--rule); overflow-x: auto; }
