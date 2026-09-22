@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { config } from './config.js';
 import { pool } from './lib/db.js';
 import { migrate } from './lib/migrate.js';
-import { ensureAdmin } from './lib/bootstrap.js';
+import { ensureAdmin, ensureOfficeRoles } from './lib/bootstrap.js';
 import { flushOutbox, verifyDeliveries } from './lib/mailer.js';
 import { AppError } from './lib/rules.js';
 
@@ -92,6 +92,7 @@ app.use((err, _req, res, _next) => {
 const boot = async () => {
   await migrate();
   await ensureAdmin();
+  await ensureOfficeRoles();
   setInterval(() => {
     flushOutbox().catch(() => {});
     verifyDeliveries().catch(() => {});
