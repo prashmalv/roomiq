@@ -68,8 +68,8 @@ export default function MyBookings() {
         {!bookings ? <Loading /> : bookings.length === 0 ? (
           <p className="muted">Nothing here yet.</p>
         ) : (
-          <div className="table-wrap">
-            <table>
+          <div className="table-wrap stack">
+            <table className="stack-sm">
               <thead>
                 <tr>
                   <th>Room</th><th>Date</th><th>Time</th><th>Meeting</th>
@@ -79,26 +79,26 @@ export default function MyBookings() {
               <tbody>
                 {bookings.map((b) => (
                   <tr key={b.id}>
-                    <td>{b.room.name}<div className="mono muted">{b.room.floor || b.room.location}</div></td>
-                    <td>{fmtLongDate(b.date)}</td>
-                    <td>{b.start}–{b.end}</td>
-                    <td>
+                    <td data-label="Room">{b.room.name}<div className="mono muted">{b.room.floor || b.room.location}</div></td>
+                    <td data-label="Date">{fmtLongDate(b.date)}</td>
+                    <td data-label="Time">{b.start}–{b.end}</td>
+                    <td data-label="Meeting">
                       {b.title}
                       {b.bookedFor.id !== user.id && <div className="mono muted">for {b.bookedFor.name}</div>}
                       {b.requestedBy.id !== user.id && <div className="mono muted">by {b.requestedBy.name}</div>}
                     </td>
-                    <td>
+                    <td data-label="Status">
                       <StatusChip status={b.status} />
                       {b.status === 'waitlisted' && (
                         <div className="mono muted">number {b.waitlistPosition} in the queue</div>
                       )}
                       {b.autoApproved && <div className="mono" style={{ color: 'var(--cat-2)' }}>by system</div>}
                     </td>
-                    <td className="mono muted">
+                    <td className="mono muted" data-label="Decision">
                       {b.decidedBy ? `${b.decidedBy}` : '—'}
                       {b.decisionNote ? <div>{b.decisionNote}</div> : null}
                     </td>
-                    <td className="right">
+                    <td className="right" data-label="Actions">
                       <div className="btn-row" style={{ justifyContent: 'flex-end' }}>
                         {b.status === 'approved' && (
                           <Link className="btn btn-sec btn-sm" to={`/pass/${b.passCode}`}

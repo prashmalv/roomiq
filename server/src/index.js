@@ -19,6 +19,7 @@ import { availabilityRouter } from './routes/availability.js';
 import { bookingsRouter } from './routes/bookings.js';
 import { adminRouter } from './routes/admin.js';
 import { passRouter } from './routes/pass.js';
+import { decideRouter } from './routes/decide.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webDist = join(here, '..', '..', 'web', 'dist');
@@ -55,6 +56,7 @@ app.use('/api/availability', availabilityRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/pass', passRouter);
+app.use('/api/decide', decideRouter);
 
 app.use('/api', (_req, _res, next) => next(new AppError(404, 'NO_ROUTE', 'Unknown endpoint.')));
 
@@ -78,7 +80,8 @@ app.use((err, _req, res, _next) => {
       code: err.code || 'INTERNAL',
       message: status >= 500 ? 'Something went wrong on our side.' : err.message,
       ...(err.maxDate ? { maxDate: err.maxDate } : {}),
-      ...(err.canWaitlist ? { canWaitlist: true } : {})
+      ...(err.canWaitlist ? { canWaitlist: true } : {}),
+      ...(err.status_now ? { status_now: err.status_now } : {})
     }
   });
 });

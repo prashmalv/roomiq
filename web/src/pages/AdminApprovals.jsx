@@ -111,6 +111,18 @@ export default function AdminApprovals() {
           <input value={search} onChange={(e) => setSearch(e.target.value)}
                  placeholder="Person, room or meeting" />
         </label>
+        {/* Same filters as the table, so the sheet matches what is on screen. */}
+        <a className="btn btn-sec btn-sm" style={{ textDecoration: 'none' }}
+           href={`/api/admin/export/bookings.xlsx?${(() => {
+             const p = new URLSearchParams();
+             if (status !== 'all') p.set('status', status);
+             if (from) p.set('from', from);
+             if (search.trim()) p.set('q', search.trim());
+             if (queue === 'leadership') p.set('senior', 'true');
+             if (queue === 'clashes') p.set('status', 'contested');
+             if (queue === 'waiting') p.set('status', 'waitlisted');
+             return p;
+           })()}`}>Download Excel</a>
       </div>
 
       {flash && <div style={{ marginTop: 'var(--s-5)' }}><Notice tone="good">{flash}</Notice></div>}

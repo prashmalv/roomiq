@@ -47,7 +47,8 @@ export default function AdminSettings() {
         allow_self_registration: !!settings.allow_self_registration,
         allowed_email_domains: String(settings.domains_text || '')
           .split(',').map((d) => d.trim().replace(/^@/, '').toLowerCase()).filter(Boolean),
-        auto_approve_senior: !!settings.auto_approve_senior
+        auto_approve_senior: !!settings.auto_approve_senior,
+        auto_approve_all: !!settings.auto_approve_all
       });
       setFlash('Policy saved. It applies to every new booking from now on.');
       await load();
@@ -155,6 +156,26 @@ export default function AdminSettings() {
               is not free: that request is refused rather than displacing the person
               waiting. With this off, leadership requests still sort to the top of the
               approvals queue and keep their own tab.
+            </p>
+
+            <div className="section-head" style={{ marginTop: 'var(--s-6)' }}><h2>Approvals</h2></div>
+            <p className="mono muted" style={{ marginBottom: 16 }}>
+              Each request emails every administrator with <strong>Approve</strong> and
+              <strong> Decline</strong> buttons that work without signing in, so the queue
+              can be cleared straight from Outlook. If even that is more than facilities
+              want to do, the switch below removes the step entirely.
+            </p>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 14, marginBottom: 18 }}>
+              <input type="checkbox" checked={!!settings.auto_approve_all}
+                     onChange={set('auto_approve_all')} style={{ width: 16, height: 16 }} />
+              Confirm every request automatically, without an approval step
+            </label>
+            <p className="mono muted" style={{ marginBottom: 16 }}>
+              A request can only exist if the room was free at that time — the database
+              refuses overlaps — so this really does mean <strong>every</strong> request is
+              confirmed, and the approvals queue will stay empty. Restricted rooms are
+              still limited to the people they are allocated to, and clashes still go to
+              whoever asked first.
             </p>
 
             <button className="btn" disabled={busy}>{busy ? 'Saving…' : 'Save policy'}</button>

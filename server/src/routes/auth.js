@@ -106,7 +106,8 @@ authRouter.get('/me', requireAuth, async (req, res, next) => {
         allow_weekend: settings.allow_weekend,
         employee_window_months: settings.employee_window_months,
         admin_window_months: settings.admin_window_months,
-        auto_approve_senior: settings.auto_approve_senior
+        auto_approve_senior: settings.auto_approve_senior,
+        auto_approve_all: settings.auto_approve_all
       }
     });
   } catch (e) { next(e); }

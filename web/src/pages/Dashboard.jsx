@@ -168,20 +168,20 @@ export default function Dashboard() {
           {mine.length === 0 ? (
             <p className="muted">Nothing booked yet. Pick one of the suggested slots above.</p>
           ) : (
-            <div className="table-wrap">
-              <table>
+            <div className="table-wrap stack">
+              <table className="stack-sm">
                 <thead>
                   <tr><th>Room</th><th>Date</th><th>Time</th><th>Meeting</th><th>Status</th><th className="right">Pass</th></tr>
                 </thead>
                 <tbody>
                   {mine.slice(0, 5).map((b) => (
                     <tr key={b.id}>
-                      <td>{b.room.name}</td>
-                      <td>{fmtLongDate(b.date)}</td>
-                      <td>{b.start}–{b.end}</td>
-                      <td>{b.title}</td>
-                      <td><StatusChip status={b.status} /></td>
-                      <td className="right">
+                      <td data-label="Room">{b.room.name}</td>
+                      <td data-label="Date">{fmtLongDate(b.date)}</td>
+                      <td data-label="Time">{b.start}–{b.end}</td>
+                      <td data-label="Meeting">{b.title}</td>
+                      <td data-label="Status"><StatusChip status={b.status} /></td>
+                      <td className="right" data-label="Pass">
                         {b.status === 'approved'
                           ? <Link to={`/pass/${b.passCode}`}>Open pass</Link>
                           : <span className="muted">—</span>}

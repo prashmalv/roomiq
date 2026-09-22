@@ -108,11 +108,14 @@ export default function Calendar() {
           <Eyebrow mute>{settings.work_start}–{settings.work_end}</Eyebrow>
         </div>
         {!day ? <Loading label="Loading day" /> : (
-          <DayGrid
-            rooms={day.rooms}
-            isAdmin={isAdmin}
-            onPick={(room, slot) => setDialog({ roomId: room.id, date, start: slot.start, end: slot.end })}
-          />
+          <>
+            <span className="scroll-hint">Swipe the grid sideways to see the rest of the day</span>
+            <DayGrid
+              rooms={day.rooms}
+              isAdmin={isAdmin}
+              onPick={(room, slot) => setDialog({ roomId: room.id, date, start: slot.start, end: slot.end })}
+            />
+          </>
         )}
       </section>
 

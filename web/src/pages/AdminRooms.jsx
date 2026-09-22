@@ -14,6 +14,8 @@ export default function AdminRooms() {
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState('');
   const [error, setError] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [report, setReport] = useState(null);
 
   const load = useCallback(async () => {
     const [r, u] = await Promise.all([api.get('/api/admin/rooms'), api.get('/api/admin/users')]);
@@ -34,6 +36,26 @@ export default function AdminRooms() {
     restricted: !!f.restricted,
     is_active: !!f.is_active
   });
+
+  /* The file is posted as the raw request body rather than multipart: one file,
+     no fields, and no extra dependency on the server to parse it. */
+  const upload = async (file) => {
+    if (!file) return;
+    setImporting(true); setError(''); setReport(null);
+    try {
+      const res = await fetch('/api/admin/rooms/import', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+        body: file
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d?.error?.message || 'That upload failed.');
+      setReport(d);
+      setFlash(`${d.created.length} of ${d.read} row${d.read === 1 ? '' : 's'} added.`);
+      await load();
+    } catch (err) { setError(err.message); } finally { setImporting(false); }
+  };
 
   const create = async (e) => {
     e.preventDefault(); setBusy(true); setError('');
@@ -85,7 +107,50 @@ export default function AdminRooms() {
         that is how a boardroom stays a boardroom. Everything else is open to all employees.
       </p>
 
+      <div className="filters" style={{ marginTop: 'var(--s-6)' }}>
+        <a className="btn btn-sec btn-sm" href="/api/admin/export/rooms.xlsx"
+           style={{ textDecoration: 'none' }}>Download Excel</a>
+        <a className="btn btn-sec btn-sm" href="/api/admin/rooms/template.xlsx"
+           style={{ textDecoration: 'none' }}>Get upload template</a>
+        <label className="btn btn-sm" style={{ cursor: importing ? 'wait' : 'pointer' }}>
+          {importing ? 'Reading the sheet…' : 'Bulk upload rooms'}
+          <input type="file" accept=".xlsx" hidden disabled={importing}
+                 onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ''; }} />
+        </label>
+      </div>
+
       {flash && <div style={{ marginTop: 'var(--s-5)' }}><Notice tone="good">{flash}</Notice></div>}
+      {error && <div style={{ marginTop: 'var(--s-5)' }}><Notice tone="bad">{error}</Notice></div>}
+
+      {report && (
+        <section className="section">
+          <div className="section-head">
+            <h2>Upload result</h2>
+            <button className="btn btn-sec btn-sm" onClick={() => setReport(null)}>Dismiss</button>
+          </div>
+          <p>
+            {report.read} row{report.read === 1 ? '' : 's'} read ·{' '}
+            <strong>{report.created.length} added</strong> ·{' '}
+            {report.skipped.length} skipped. Nothing was overwritten.
+          </p>
+          {report.skipped.length > 0 && (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Sheet row</th><th>Name</th><th>Why it was skipped</th></tr></thead>
+                <tbody>
+                  {report.skipped.map((s) => (
+                    <tr key={s.row} className="row-clash">
+                      <td className="num">{s.row}</td>
+                      <td>{s.name || <span className="muted">(blank)</span>}</td>
+                      <td>{s.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
 
       <div className="split section">
         <section>

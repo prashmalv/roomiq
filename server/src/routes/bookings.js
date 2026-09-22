@@ -145,6 +145,67 @@ export async function promoteFromWaitlist(freed) {
   return null;
 }
 
+/**
+ * Approve or decline a request. Lives here rather than in the admin routes
+ * because two callers need identical behaviour: the Approvals screen and the
+ * one-click links in the notification email. Duplicating it would eventually
+ * mean the email path forgetting to close contested requests or to hand a
+ * declined slot to the waiting list.
+ */
+export async function applyDecision({ bookingId, decision, note, actorId }) {
+  const b = await loadBooking(bookingId);
+  if (!b) throw new AppError(404, 'NOT_FOUND', 'Booking not found.');
+  if (!['pending', 'contested', 'waitlisted'].includes(b.status))
+    throw new AppError(400, 'NOT_PENDING', `This request is already ${b.status}.`, { status_now: b.status });
+  if (decision === 'rejected' && !note)
+    throw new AppError(400, 'NOTE_REQUIRED', 'Please give a reason so the requester knows why.');
+
+  try {
+    await q(
+      `UPDATE bookings SET status=$2, decided_by=$3, decided_at=now(), decision_note=$4 WHERE id=$1`,
+      [b.id, decision, actorId, note || null]
+    );
+  } catch (e) {
+    if (e.code !== '23P01') throw e;
+    // Approving a contested request cannot evict the holder silently: the
+    // admin has to settle the request that is actually holding the slot.
+    if (b.status === 'contested')
+      throw new AppError(409, 'STILL_HELD',
+        'This slot is still held by the request that was filed first. Decline or cancel that one, then approve this.');
+    throw new AppError(409, 'SLOT_TAKEN', 'Another confirmed booking now overlaps this slot.');
+  }
+
+  const after = await loadBooking(b.id);
+  await audit(actorId, `booking.${decision}`, 'booking', b.id, { note: note || null, from: b.status });
+  await queueMail(decision === 'approved' ? 'booking_approved' : 'booking_rejected',
+                  { name: after.for_name, email: after.for_email }, after, after.id);
+
+  /* Confirming the request that held the slot settles the argument: any
+     contested request waiting on the same slot can never be met, so it is
+     closed here rather than left to rot in the queue. */
+  if (decision === 'approved' && b.status === 'pending') {
+    const { rows: losers } = await q(
+      `UPDATE bookings SET status='rejected', decided_by=$1, decided_at=now(), decision_note=$2
+        WHERE status='contested' AND room_id=$3 AND slot && $4
+        RETURNING id`,
+      [actorId, 'The slot was confirmed for the request that was filed first.', b.room_id, b.slot]
+    );
+    for (const l of losers) {
+      const lost = await loadBooking(l.id);
+      await audit(actorId, 'booking.contest_closed', 'booking', l.id, { winner: b.id });
+      await queueMail('booking_rejected', { name: lost.for_name, email: lost.for_email }, lost, lost.id);
+    }
+  }
+
+  // Declining frees the slot exactly as a cancellation does.
+  const promoted = decision === 'rejected' && b.status !== 'waitlisted'
+    ? await promoteFromWaitlist(after)
+    : null;
+
+  flushSoon();
+  return { booking: after, promoted, from: b.status };
+}
+
 /* ------------------------------------------------------------- create ----- */
 bookingsRouter.post('/', requireAuth, async (req, res, next) => {
   try {
@@ -187,7 +248,8 @@ bookingsRouter.post('/', requireAuth, async (req, res, next) => {
        separate check: the exclusion constraint only lets the insert succeed if
        the slot was actually clear, so a successful write *is* the proof. */
     const isSenior = !!target.is_senior;
-    const autoApproved = !isAdmin && isSenior && !!settings.auto_approve_senior;
+    const autoApproved = !isAdmin &&
+      ((isSenior && !!settings.auto_approve_senior) || !!settings.auto_approve_all);
     const status = isAdmin || autoApproved ? 'approved' : 'pending';
     // decided_by stays NULL for a system decision — that is what distinguishes
     // "approved by system" from "approved by an administrator".

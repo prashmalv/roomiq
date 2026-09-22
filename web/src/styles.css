@@ -346,3 +346,69 @@ tbody tr.row-clash td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
 .clash-note { color: var(--bad); font: 500 12px/1.45 var(--body); margin-top: 6px; }
 .tab-clash.on { color: var(--bad); border-bottom-color: var(--bad); }
 .tab-clash.on .tab-n { background: var(--bad); }
+
+/* ===========================================================================
+   Phones.  Employees book from a phone far more than from a desk, so the
+   employee-facing screens get a real layout here rather than a shrunk one.
+   =========================================================================== */
+
+/* 16px is the threshold below which iOS Safari zooms the page on focus, which
+   then leaves the layout scrolled sideways. Cheaper to obey it than to fight it. */
+@media (max-width: 760px) {
+  input, select, textarea { font-size: 16px; padding: 12px; }
+  .btn { padding: 13px 18px; }              /* ~44px: a thumb, not a cursor */
+  .btn-sm { padding: 10px 14px; font-size: 14px; }
+  .page { padding-top: var(--s-6); }
+  .section { margin-top: var(--s-6); }
+  .band { padding: var(--s-6) 0; }
+  .filters label.field { min-width: 0; flex: 1 1 140px; }
+}
+
+/* The nav carries up to seven destinations. Rather than hide them behind a
+   menu button, the strip scrolls sideways under the wordmark — everything stays
+   one tap away and there is no open/closed state to get wrong. */
+@media (max-width: 860px) {
+  .nav-in { flex-wrap: wrap; gap: var(--s-2); padding: 10px 0; }
+  .nav-links {
+    width: 100%; margin-left: 0; flex-wrap: nowrap; gap: var(--s-4);
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; padding-bottom: 2px;
+  }
+  .nav-links::-webkit-scrollbar { display: none; }
+  .nav-links a, .nav-links .nav-user { white-space: nowrap; flex: 0 0 auto; }
+  .nav-links .btn { flex: 0 0 auto; }
+  .brand { margin-right: auto; }
+}
+
+/* A seven-column register does not survive a 390px screen, so on the screens
+   employees actually use each row becomes a small block with its own labels.
+   Admin registers keep the scrolling table: the columns are the point there,
+   and an admin deciding from a phone now does it from the email instead. */
+@media (max-width: 680px) {
+  .table-wrap.stack { border: 0; overflow: visible; }
+  .stack-sm thead { display: none; }
+  .stack-sm, .stack-sm tbody, .stack-sm tr, .stack-sm td { display: block; width: 100%; }
+  .stack-sm tr { border: 1px solid var(--rule); margin-bottom: var(--s-3); padding: var(--s-3) 0; }
+  .stack-sm tbody tr:nth-child(even) td { background: transparent; }
+  .stack-sm tbody td { border: 0; padding: 5px var(--s-4); }
+  .stack-sm tbody td:first-child { font-size: 17px; }
+  .stack-sm td::before {
+    content: attr(data-label); display: block; margin-bottom: 2px;
+    font: 500 10px/1.4 var(--body); letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .stack-sm td.right { text-align: left; }
+  .stack-sm tbody tr.row-senior td:first-child,
+  .stack-sm tbody tr.row-clash td:first-child { box-shadow: none; }
+  .stack-sm tbody tr.row-senior { border-left: 3px solid var(--cat-4); }
+  .stack-sm tbody tr.row-clash  { border-left: 3px solid var(--bad); }
+}
+
+/* The day grid is a genuine grid and cannot usefully stack, so it scrolls — but
+   say so, because a table that scrolls with no hint reads as a truncated one. */
+@media (max-width: 760px) {
+  .daygrid-inner { min-width: 680px; }
+  .scroll-hint { display: block; }
+}
+.scroll-hint { display: none; font-family: var(--mono); font-size: 11px;
+               color: var(--ink-3); margin-bottom: var(--s-2); }

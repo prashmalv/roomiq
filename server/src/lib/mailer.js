@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import { createHash, createHmac } from 'node:crypto';
 import { config } from '../config.js';
 import { q } from './db.js';
+import { signDecisionToken } from './auth.js';
 
 /* ---------------------------------------------------------------------------
    Transport is deliberately behind a one-function interface.  Today: SMTP
@@ -129,6 +130,18 @@ function shell(heading, eyebrow, rows, bodyLines, cta) {
         )}</td><td style="padding:8px 0;font:400 15px/1.5 Arial,sans-serif;color:#10161D">${esc(v)}</td></tr>`
     )
     .join('');
+
+  // The first button is solid and the rest outlined, so a mail client that
+  // strips nothing still shows one obvious primary action.
+  const buttons = (Array.isArray(cta) ? cta : cta ? [cta] : [])
+    .map((c, i) => {
+      const style = i === 0 && c.tone !== 'quiet'
+        ? 'background:#0B5FA5;color:#fff;border:1px solid #0B5FA5'
+        : 'background:#fff;color:#0B5FA5;border:1px solid #D8DEE4';
+      return `<a href="${esc(c.url)}" style="display:inline-block;${style};font:500 14px/1 Arial,sans-serif;padding:12px 18px;text-decoration:none;border-radius:2px;margin:0 8px 8px 0">${esc(c.label)}</a>`;
+    })
+    .join('');
+
   return `<!doctype html><html><body style="margin:0;background:#F3F7FA;padding:32px 16px">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#fff">
 <tr><td style="background:#0A3D6E;padding:24px 28px">
@@ -143,13 +156,7 @@ function shell(heading, eyebrow, rows, bodyLines, cta) {
         `<p style="font:400 15px/1.6 Arial,sans-serif;color:#4A5561;margin:20px 0 0">${esc(l)}</p>`
     )
     .join('')}
-  ${
-    cta
-      ? `<p style="margin:24px 0 0"><a href="${esc(cta.url)}" style="display:inline-block;background:#0B5FA5;color:#fff;font:500 14px/1 Arial,sans-serif;padding:12px 18px;text-decoration:none;border-radius:2px">${esc(
-          cta.label
-        )}</a></p>`
-      : ''
-  }
+  ${buttons ? `<p style="margin:24px 0 0">${buttons}</p>` : ''}
 </td></tr>
 <tr><td style="border-top:1px solid #D8DEE4;padding:16px 28px;font:400 11px/1.5 Arial,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:#7A8590">UneeRooms &nbsp;·&nbsp; ${esc(
     config.mail.from.replace(/.*<|>.*/g, '') || 'UneeRooms'
@@ -174,13 +181,24 @@ const slotRows = (b) => [
 ];
 
 export const templates = {
-  booking_requested: (b) => ({
+  booking_requested: (b, to) => ({
     subject: `Approval needed — ${b.room_name}, ${fmtDate(b.booking_date)} ${b.start_time.slice(0, 5)}`,
     eyebrow: 'Awaiting approval',
     heading: 'A room request needs your decision',
     rows: slotRows(b).concat([['Requested by', b.by_name]]),
-    lines: [b.purpose ? `Purpose: ${b.purpose}` : 'No purpose was recorded.'],
-    cta: { label: 'Review request', url: `${config.publicUrl}/admin/approvals` }
+    lines: [
+      b.purpose ? `Purpose: ${b.purpose}` : 'No purpose was recorded.',
+      to?.id
+        ? 'Approve or decline from here — the buttons open a confirmation page and no sign-in is needed. Anyone you forward this to could decide it, so keep it to yourself.'
+        : 'Open the approvals screen to decide.'
+    ],
+    cta: to?.id
+      ? [
+          { label: 'Approve', url: `${config.publicUrl}/decide/${signDecisionToken(b.id, to.id)}?action=approve` },
+          { label: 'Decline', url: `${config.publicUrl}/decide/${signDecisionToken(b.id, to.id)}?action=reject` },
+          { label: 'Open approvals', url: `${config.publicUrl}/admin/approvals`, tone: 'quiet' }
+        ]
+      : { label: 'Review request', url: `${config.publicUrl}/admin/approvals` }
   }),
   booking_approved: (b) => ({
     subject: `Approved — ${b.room_name}, ${fmtDate(b.booking_date)} ${b.start_time.slice(0, 5)}`,
@@ -317,13 +335,14 @@ export const templates = {
 
 /** Persist first, send second. Returns the outbox row id. */
 export async function queueMail(kind, to, payload, bookingId = null) {
-  const t = templates[kind](payload);
+  const t = templates[kind](payload, to);
   const html = shell(t.heading, t.eyebrow, t.rows, t.lines, t.cta);
+  const ctas = t.cta ? (Array.isArray(t.cta) ? t.cta : [t.cta]) : [];
   const text =
     `${t.heading}\n\n` +
     t.rows.map(([k, v]) => `${k}: ${v}`).join('\n') +
     `\n\n${t.lines.join('\n')}` +
-    (t.cta ? `\n\n${t.cta.label}: ${t.cta.url}` : '');
+    (ctas.length ? `\n\n${ctas.map((c) => `${c.label}: ${c.url}`).join('\n')}` : '');
 
   const { rows } = await q(
     `INSERT INTO email_outbox (booking_id, kind, to_email, to_name, subject, body_html, body_text)
@@ -390,7 +409,7 @@ export const flushSoon = () => setTimeout(() => flushOutbox().catch(() => {}), 5
 
 export async function adminRecipients() {
   const { rows } = await q(
-    `SELECT name, email FROM users WHERE role='admin' AND is_active ORDER BY name`
+    `SELECT id, name, email FROM users WHERE role='admin' AND is_active ORDER BY name`
   );
   if (rows.length) return rows;
   return config.mail.adminFallback ? [{ name: 'Administrator', email: config.mail.adminFallback }] : [];

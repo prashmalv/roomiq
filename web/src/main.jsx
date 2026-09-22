@@ -9,6 +9,7 @@ import { Loading } from './components/ui.jsx';
 import Login from './pages/Login.jsx';
 import Register from './pages/Register.jsx';
 import Profile from './pages/Profile.jsx';
+import Decide from './pages/Decide.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Calendar from './pages/Calendar.jsx';
 import MyBookings from './pages/MyBookings.jsx';
@@ -33,6 +34,8 @@ function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/pass/:code" element={<Pass />} />
+      {/* Signed link from the notification email; deliberately outside Private. */}
+      <Route path="/decide/:token" element={<Decide />} />
       <Route path="/" element={<Private><Dashboard /></Private>} />
       <Route path="/calendar" element={<Private><Calendar /></Private>} />
       <Route path="/bookings" element={<Private><MyBookings /></Private>} />

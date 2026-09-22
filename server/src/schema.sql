@@ -210,3 +210,11 @@ END $$;
 -- First come, first served: the queue is ordered by when the request was filed.
 CREATE INDEX IF NOT EXISTS bookings_waitlist_idx
   ON bookings (room_id, booking_date, created_at) WHERE status = 'waitlisted';
+
+-- ------------------------------------------------ auto-approve everything ---
+-- The fallback facilities asked for: if deciding by email still feels like too
+-- much, confirm every request outright. The exclusion constraint means a
+-- request only exists when the slot was free, so "approve when the room is
+-- free" is in practice "approve everything" — hence the blunt name, and off by
+-- default so nobody turns off approvals without meaning to.
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS auto_approve_all boolean NOT NULL DEFAULT false;

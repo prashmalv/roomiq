@@ -95,6 +95,8 @@ export default function AdminPeople() {
           <button type="button" className="btn btn-sec btn-sm"
                   onClick={() => { setSearch(''); setRole(''); }}>Clear</button>
         )}
+        <a className="btn btn-sec btn-sm" href="/api/admin/export/people.xlsx"
+           style={{ textDecoration: 'none' }}>Download Excel</a>
       </div>
 
       {flash && <div style={{ marginTop: 'var(--s-5)' }}><Notice tone="good">{flash}</Notice></div>}

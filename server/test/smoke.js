@@ -15,7 +15,7 @@ const ok = (name, cond, extra = '') => {
 
 function session() {
   let cookie = '';
-  return async (method, path, body) => {
+  const call = async (method, path, body) => {
     const r = await fetch(BASE + path, {
       method,
       headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
@@ -27,10 +27,52 @@ function session() {
     try { json = await r.json(); } catch { /* empty */ }
     return { status: r.status, body: json };
   };
+  call.cookieHeader = () => (cookie ? { cookie } : {});
+  return call;
 }
 
 const emp = session();
 const adm = session();
+
+/** Like session() but reports headers and byte length, for file downloads. */
+function rawSession(of) {
+  return async (method, path) => {
+    const r = await fetch(BASE + path, { method, headers: of.cookieHeader() });
+    const buf = Buffer.from(await r.arrayBuffer());
+    return { status: r.status, type: r.headers.get('content-type'), bytes: buf.length, buf };
+  };
+}
+/** Posts a file as the raw request body, the way the Rooms screen does. */
+function uploadSession(of) {
+  return async (path, buf) => {
+    const r = await fetch(BASE + path, {
+      method: 'POST',
+      headers: {
+        ...of.cookieHeader(),
+        'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      },
+      body: buf
+    });
+    let body = null;
+    try { body = await r.json(); } catch { /* empty */ }
+    return { status: r.status, body };
+  };
+}
+
+/** Builds a rooms workbook in memory, as an administrator would in Excel. */
+async function buildRoomSheet(rows) {
+  const { default: ExcelJS } = await import('exceljs');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Rooms');
+  const headers = ['Name', 'Capacity', 'Floor', 'Location', 'Amenities', 'Restricted'];
+  ws.addRow(headers);
+  for (const r of rows) ws.addRow(headers.map((h) => r[h]));
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
+const admRaw = rawSession(adm);
+const empRaw = rawSession(emp);
+const admUpload = uploadSession(adm);
 
 console.log(`\nUneeRooms smoke test → ${BASE}\n`);
 
@@ -492,6 +534,100 @@ ok('facilities were told about the reallocation', r.body.mails.some((m) => m.kin
 
 r = await second('POST', `/api/bookings/${waiterTwo.id}/cancel`, {});
 ok('a waiter can leave the queue', r.status === 200 && r.body.booking.status === 'cancelled');
+
+// ------------------------------------------------ deciding from the email --
+console.log('\ndeciding from the notification email');
+const emailer = session();
+r = await emailer('POST', '/api/auth/register', {
+  name: 'Smoke Mailer', email: `smoke.mailer.${stamp}@uneecops.in`, password: 'Testing@123'
+});
+ok('a requester can sign up', r.status === 201);
+
+r = await emailer('GET', '/api/availability/suggestions?duration=60&attendees=2');
+const mailSlot = r.body.suggestions?.[0];
+r = await emailer('POST', '/api/bookings', {
+  roomId: mailSlot.roomId, title: 'Decide by email', attendees: 2,
+  date: mailSlot.date, start: mailSlot.start, end: mailSlot.end
+});
+ok('the request is filed as pending', r.status === 201 && r.body.booking.status === 'pending');
+const mailBooking = r.body.booking;
+
+r = await adm('GET', '/api/admin/outbox');
+const notice = r.body.mails.find((m) => m.kind === 'booking_requested');
+ok('the admin notification was queued', !!notice);
+
+// The link is what an administrator actually clicks, so read it back out of
+// the queued message rather than minting a fresh one.
+r = await adm('GET', `/api/admin/outbox/${notice.id}`);
+const bodyText = r.body?.mail?.body_text || '';
+const approveUrl = bodyText.split('\n').find((l) => l.startsWith('Approve: '))?.slice(9).trim();
+ok('the mail carries a one-click approve link', !!approveUrl, bodyText.slice(-160));
+const decideToken = approveUrl?.split('/decide/')[1]?.split('?')[0];
+ok('and a decline link beside it', bodyText.includes('Decline: '));
+
+const anon = session();
+r = await anon('GET', `/api/decide/${decideToken}`);
+ok('the link opens the request with no sign-in', r.status === 200 && r.body.decidable === true, JSON.stringify(r.body?.error));
+ok('it names the administrator it will act as', !!r.body.admin?.name);
+
+// Mail scanners fetch every link before a human sees it, so GET must not decide.
+r = await adm('GET', `/api/admin/bookings?status=pending`);
+ok('merely opening the link decides nothing',
+   r.body.bookings.some((b) => b.id === mailBooking.id), 'the request left the pending queue on a GET');
+
+r = await anon('POST', `/api/decide/${decideToken}`, { action: 'reject' });
+ok('declining by email still needs a reason', r.status === 400 && r.body.error.code === 'NOTE_REQUIRED');
+
+r = await anon('POST', `/api/decide/${decideToken}`, { action: 'approve' });
+ok('approving by email confirms the room', r.status === 200 && r.body.booking.status === 'approved', JSON.stringify(r.body));
+ok('the decision is recorded against the administrator', !!r.body.decidedBy);
+
+r = await anon('POST', `/api/decide/${decideToken}`, { action: 'reject', note: 'changed my mind' });
+ok('the link cannot be replayed once used', r.status === 400 && r.body.error.code === 'NOT_PENDING');
+
+r = await anon('GET', `/api/decide/${decideToken?.slice(0, -4)}XXXX`);
+ok('a tampered link is refused', r.status === 400 && r.body.error.code === 'BAD_LINK');
+
+// ------------------------------------------------------- excel downloads ---
+console.log('\nspreadsheet exports');
+for (const what of ['bookings', 'rooms', 'people']) {
+  r = await admRaw('GET', `/api/admin/export/${what}.xlsx`);
+  ok(`${what} download is a real xlsx`,
+     r.status === 200 && r.type?.includes('spreadsheetml') && r.bytes > 5000,
+     JSON.stringify({ status: r.status, type: r.type, bytes: r.bytes }));
+}
+r = await admRaw('GET', '/api/admin/rooms/template.xlsx');
+ok('the room template downloads', r.status === 200 && r.bytes > 5000, JSON.stringify(r.bytes));
+
+r = await empRaw('GET', '/api/admin/export/bookings.xlsx');
+ok('employees cannot download the register', r.status === 403, JSON.stringify(r.status));
+
+// ---------------------------------------------------- bulk room upload -----
+console.log('\nbulk room upload');
+const xlsx = await buildRoomSheet([
+  { Name: `Smoke Room A ${stamp}`, Capacity: 6, Floor: '1st floor', Location: 'HQ', Amenities: 'TV screen, Whiteboard', Restricted: 'No' },
+  { Name: `Smoke Room B ${stamp}`, Capacity: 12, Floor: '5th floor', Location: 'HQ', Amenities: 'Video conferencing', Restricted: 'Yes' },
+  { Name: 'Ganges', Capacity: 10, Floor: '3rd floor', Location: 'HQ', Amenities: '', Restricted: 'No' },
+  { Name: '', Capacity: 8, Floor: '', Location: '', Amenities: '', Restricted: 'No' },
+  { Name: `Smoke Bad ${stamp}`, Capacity: 'eight', Floor: '', Location: '', Amenities: '', Restricted: 'No' }
+]);
+r = await admUpload('/api/admin/rooms/import', xlsx);
+ok('the upload is accepted', r.status === 200, JSON.stringify(r.body?.error));
+ok('valid rows are created', r.body.created.length === 2, JSON.stringify(r.body.created?.map((c) => c.name)));
+ok('a duplicate name is skipped rather than overwritten',
+   r.body.skipped.some((x) => /already exists/.test(x.reason)), JSON.stringify(r.body.skipped));
+ok('a missing name is reported with its sheet row',
+   r.body.skipped.some((x) => /Name is missing/.test(x.reason) && x.row > 1), JSON.stringify(r.body.skipped));
+ok('a non-numeric capacity is reported', r.body.skipped.some((x) => /Capacity/.test(x.reason)));
+
+r = await admUpload('/api/admin/rooms/import', Buffer.from('this is not a spreadsheet'));
+ok('a file that is not a workbook is refused', r.status === 400 && r.body.error.code === 'BAD_FILE', JSON.stringify(r.body));
+
+r = await adm('PATCH', '/api/admin/settings', { auto_approve_all: true });
+ok('the approve-everything fallback can be switched on',
+   r.status === 200 && r.body.settings.auto_approve_all === true);
+r = await adm('PATCH', '/api/admin/settings', { auto_approve_all: false });
+ok('and switched back off', r.body.settings.auto_approve_all === false);
 
 // -------------------------------------------------------------- report ----
 console.log(`\n${pass} passed, ${fail} failed\n`);

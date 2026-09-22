@@ -1,12 +1,15 @@
 import { Router } from 'express';
+import express from 'express';
 import { z } from 'zod';
 import { q, audit } from '../lib/db.js';
 import { requireAuth, requireAdmin, hashPassword } from '../lib/auth.js';
 import { getSettings, updateSettings } from '../lib/settings.js';
 import { AppError, nowLocal } from '../lib/rules.js';
 import { queueMail, flushSoon, flushOutbox, verifyDeliveries } from '../lib/mailer.js';
-import { BOOKING_VIEW, loadBooking, shape, promoteFromWaitlist } from './bookings.js';
+import { BOOKING_VIEW, loadBooking, shape, applyDecision } from './bookings.js';
 import { publicUser } from './auth.js';
+import { sheet, workbookBuffer, sendWorkbook, readSheet } from '../lib/spreadsheet.js';
+import { todayISO } from '../lib/rules.js';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireAdmin);
@@ -42,62 +45,11 @@ async function decide(req, res, next, decision) {
   try {
     const note = z.object({ note: z.string().trim().max(300).optional() })
       .parse(req.body || {}).note;
-    const b = await loadBooking(req.params.id);
-    if (!b) throw new AppError(404, 'NOT_FOUND', 'Booking not found.');
-    if (!['pending', 'contested', 'waitlisted'].includes(b.status))
-      throw new AppError(400, 'NOT_PENDING', `This request is already ${b.status}.`);
-    if (decision === 'rejected' && !note)
-      throw new AppError(400, 'NOTE_REQUIRED', 'Please give a reason so the requester knows why.');
-
-    try {
-      await q(
-        `UPDATE bookings SET status=$2, decided_by=$3, decided_at=now(), decision_note=$4 WHERE id=$1`,
-        [b.id, decision, req.user.id, note || null]
-      );
-    } catch (e) {
-      if (e.code !== '23P01') throw e;
-      // Approving a contested request cannot evict the holder silently: the
-      // admin has to settle the request that is actually holding the slot.
-      if (b.status === 'contested')
-        throw new AppError(409, 'STILL_HELD',
-          'This slot is still held by the request that was filed first. Decline or cancel that one, then approve this.');
-      throw new AppError(409, 'SLOT_TAKEN', 'Another confirmed booking now overlaps this slot.');
-    }
-
-    const after = await loadBooking(b.id);
-    await audit(req.user.id, `booking.${decision}`, 'booking', b.id,
-                { note: note || null, from: b.status });
-    await queueMail(decision === 'approved' ? 'booking_approved' : 'booking_rejected',
-                    { name: after.for_name, email: after.for_email }, after, after.id);
-
-    /* Confirming the request that held the slot settles the argument: any
-       contested request waiting on the same slot can never be met, so it is
-       closed here rather than left to rot in the queue. */
-    if (decision === 'approved' && b.status === 'pending') {
-      const { rows: losers } = await q(
-        `UPDATE bookings SET status='rejected', decided_by=$1, decided_at=now(),
-                decision_note=$2
-          WHERE status='contested' AND room_id=$3 AND slot && $4
-          RETURNING id`,
-        [req.user.id,
-         'The slot was confirmed for the request that was filed first.',
-         b.room_id, b.slot]
-      );
-      for (const l of losers) {
-        const lost = await loadBooking(l.id);
-        await audit(req.user.id, 'booking.contest_closed', 'booking', l.id, { winner: b.id });
-        await queueMail('booking_rejected', { name: lost.for_name, email: lost.for_email }, lost, lost.id);
-      }
-    }
-
-    // Declining frees the slot exactly as a cancellation does.
-    const promoted = decision === 'rejected' && b.status !== 'waitlisted'
-      ? await promoteFromWaitlist(after)
-      : null;
-
-    flushSoon();
+    const { booking, promoted } = await applyDecision({
+      bookingId: req.params.id, decision, note, actorId: req.user.id
+    });
     res.json({
-      booking: shape(after, true),
+      booking: shape(booking, true),
       ...(promoted ? { reallocatedTo: { name: promoted.for_name, date: promoted.booking_date } } : {})
     });
   } catch (e) { next(e); }
@@ -301,7 +253,8 @@ adminRouter.patch('/settings', async (req, res, next) => {
         z.string().trim().toLowerCase()
          .regex(/^[a-z0-9.-]+\.[a-z]{2,}$/, 'Enter a bare domain such as uneecops.in — no @ and no spaces.')
       ).max(10).optional(),
-      auto_approve_senior: z.boolean().optional()
+      auto_approve_senior: z.boolean().optional(),
+      auto_approve_all: z.boolean().optional()
     }).parse(req.body);
     const settings = await updateSettings(b);
     await audit(req.user.id, 'settings.update', 'settings', 'singleton', b);
@@ -318,6 +271,21 @@ adminRouter.get('/outbox', async (req, res, next) => {
          FROM email_outbox ORDER BY created_at DESC LIMIT 100`
     );
     res.json({ mails: rows });
+  } catch (e) { next(e); }
+});
+
+/* One message in full, so "what exactly did they get sent?" is answerable
+   without going to the database. */
+adminRouter.get('/outbox/:id', async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT id, booking_id, kind, to_email, to_name, subject, body_text, body_html,
+              status, attempts, last_error, provider_id, created_at, sent_at, verified_at
+         FROM email_outbox WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows[0]) throw new AppError(404, 'NOT_FOUND', 'No such message.');
+    res.json({ mail: rows[0] });
   } catch (e) { next(e); }
 });
 
@@ -366,3 +334,249 @@ adminRouter.get('/stats', async (_req, res, next) => {
 });
 
 adminRouter.get('/whoami', (req, res) => res.json({ user: publicUser(req.user) }));
+
+/* ============================================================== exports === */
+/* Facilities asked to be able to keep their own reports, so every register the
+   screens show can be pulled as a real spreadsheet with the same filters. */
+
+const HEAD_FILL_HELP = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0A3D6E' } };
+
+const STATUS_LABEL = {
+  pending: 'Awaiting decision', approved: 'Confirmed', rejected: 'Declined',
+  cancelled: 'Cancelled', contested: 'Contested', waitlisted: 'On waiting list'
+};
+
+adminRouter.get('/export/bookings.xlsx', async (req, res, next) => {
+  try {
+    const status = req.query.status ? String(req.query.status).split(',') : null;
+    const from = req.query.from ? String(req.query.from) : null;
+    const to = req.query.to ? String(req.query.to) : null;
+    const search = req.query.q ? `%${String(req.query.q).trim()}%` : null;
+    const senior = req.query.senior === undefined ? null : req.query.senior === 'true';
+
+    const { rows } = await q(
+      `${BOOKING_VIEW}
+        WHERE ($1::text[] IS NULL OR b.status = ANY($1))
+          AND ($2::date  IS NULL OR b.booking_date >= $2)
+          AND ($3::date  IS NULL OR b.booking_date <= $3)
+          AND ($4::text  IS NULL OR uf.name ILIKE $4 OR r.name ILIKE $4 OR b.title ILIKE $4)
+          AND ($5::boolean IS NULL OR uf.is_senior = $5)
+        ORDER BY b.booking_date DESC, b.start_time
+        LIMIT 20000`,
+      [status, from, to, search, senior]
+    );
+
+    const buf = await workbookBuffer((wb) => {
+      sheet(wb, 'Bookings', [
+        { header: 'Date', key: 'date', width: 12 },
+        { header: 'Start', key: 'start', width: 8 },
+        { header: 'End', key: 'end', width: 8 },
+        { header: 'Hours', key: 'hours', width: 8, numFmt: '0.0' },
+        { header: 'Room', key: 'room', width: 20 },
+        { header: 'Floor', key: 'floor', width: 14 },
+        { header: 'Booked for', key: 'who', width: 24 },
+        { header: 'Department', key: 'dept', width: 18 },
+        { header: 'Email', key: 'email', width: 30 },
+        { header: 'Senior leadership', key: 'senior', width: 17 },
+        { header: 'Meeting', key: 'title', width: 30 },
+        { header: 'Purpose', key: 'purpose', width: 34 },
+        { header: 'Attendees', key: 'attendees', width: 10 },
+        { header: 'Status', key: 'status', width: 18 },
+        { header: 'Decided by', key: 'decided', width: 22 },
+        { header: 'Decided at', key: 'decided_at', width: 20 },
+        { header: 'Reason / note', key: 'note', width: 34 },
+        { header: 'Requested by', key: 'by', width: 22 },
+        { header: 'Requested at', key: 'created', width: 20 },
+        { header: 'Pass code', key: 'pass', width: 14 }
+      ], rows.map((b) => ({
+        date: b.booking_date,
+        start: b.start_time.slice(0, 5),
+        end: b.end_time.slice(0, 5),
+        hours: (Date.parse(`1970-01-01T${b.end_time}Z`) - Date.parse(`1970-01-01T${b.start_time}Z`)) / 3600000,
+        room: b.room_name,
+        floor: b.floor || b.location || '',
+        who: b.for_name,
+        dept: b.for_department || '',
+        email: b.for_email,
+        senior: b.for_is_senior ? 'Yes' : 'No',
+        title: b.title,
+        purpose: b.purpose || '',
+        attendees: b.attendees,
+        status: STATUS_LABEL[b.status] || b.status,
+        // A system decision has no person against it; say so rather than blank.
+        decided: b.auto_approved ? 'System' : b.decided_by_name || '',
+        decided_at: b.decided_at ? new Date(b.decided_at).toISOString().slice(0, 16).replace('T', ' ') : '',
+        note: b.decision_note || '',
+        by: b.by_name,
+        created: new Date(b.created_at).toISOString().slice(0, 16).replace('T', ' '),
+        pass: b.pass_code
+      })));
+    });
+
+    await audit(req.user.id, 'export.bookings', 'booking', null, { rows: rows.length, from, to });
+    sendWorkbook(res, `uneerooms-bookings-${todayISO()}.xlsx`, buf);
+  } catch (e) { next(e); }
+});
+
+adminRouter.get('/export/rooms.xlsx', async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT r.*,
+              (SELECT count(*) FROM bookings b WHERE b.room_id = r.id AND b.status='approved')::int AS confirmed,
+              COALESCE(string_agg(u.name, ', ' ORDER BY u.name), '') AS allocated
+         FROM rooms r
+         LEFT JOIN room_access ra ON ra.room_id = r.id
+         LEFT JOIN users u ON u.id = ra.user_id
+        GROUP BY r.id ORDER BY r.floor NULLS LAST, r.name`
+    );
+    const buf = await workbookBuffer((wb) => {
+      sheet(wb, 'Rooms', [
+        { header: 'Name', key: 'name', width: 24 },
+        { header: 'Capacity', key: 'capacity', width: 10 },
+        { header: 'Floor', key: 'floor', width: 16 },
+        { header: 'Location', key: 'location', width: 26 },
+        { header: 'Amenities', key: 'amenities', width: 34 },
+        { header: 'Restricted', key: 'restricted', width: 11 },
+        { header: 'Allocated to', key: 'allocated', width: 34 },
+        { header: 'Active', key: 'active', width: 9 },
+        { header: 'Confirmed bookings', key: 'confirmed', width: 18 }
+      ], rows.map((r) => ({
+        name: r.name, capacity: r.capacity, floor: r.floor || '', location: r.location || '',
+        amenities: (r.amenities || []).join(', '),
+        restricted: r.restricted ? 'Yes' : 'No',
+        allocated: r.allocated, active: r.is_active ? 'Yes' : 'No', confirmed: r.confirmed
+      })));
+    });
+    await audit(req.user.id, 'export.rooms', 'room', null, { rows: rows.length });
+    sendWorkbook(res, `uneerooms-rooms-${todayISO()}.xlsx`, buf);
+  } catch (e) { next(e); }
+});
+
+adminRouter.get('/export/people.xlsx', async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT u.*,
+              count(b.id) FILTER (WHERE b.status IN ('pending','approved')
+                                    AND b.booking_date >= current_date)::int AS upcoming,
+              count(b.id) FILTER (WHERE b.status = 'approved')::int AS confirmed_total
+         FROM users u LEFT JOIN bookings b ON b.booked_for = u.id
+        GROUP BY u.id ORDER BY u.role, u.name`
+    );
+    const buf = await workbookBuffer((wb) => {
+      sheet(wb, 'People', [
+        { header: 'Name', key: 'name', width: 24 },
+        { header: 'Email', key: 'email', width: 32 },
+        { header: 'Department', key: 'dept', width: 20 },
+        { header: 'Role', key: 'role', width: 14 },
+        { header: 'Senior leadership', key: 'senior', width: 17 },
+        { header: 'Active', key: 'active', width: 9 },
+        { header: 'Upcoming bookings', key: 'upcoming', width: 17 },
+        { header: 'Confirmed to date', key: 'confirmed', width: 17 },
+        { header: 'Joined', key: 'joined', width: 12 }
+      ], rows.map((u) => ({
+        name: u.name, email: u.email, dept: u.department || '',
+        role: u.role === 'admin' ? 'Administrator' : 'Employee',
+        senior: u.is_senior ? 'Yes' : 'No', active: u.is_active ? 'Yes' : 'No',
+        upcoming: u.upcoming, confirmed: u.confirmed_total,
+        joined: new Date(u.created_at).toISOString().slice(0, 10)
+      })));
+    });
+    await audit(req.user.id, 'export.people', 'user', null, { rows: rows.length });
+    sendWorkbook(res, `uneerooms-people-${todayISO()}.xlsx`, buf);
+  } catch (e) { next(e); }
+});
+
+/* ========================================================= bulk rooms ===== */
+const ROOM_TEMPLATE_COLUMNS = [
+  { header: 'Name', key: 'name', width: 24 },
+  { header: 'Capacity', key: 'capacity', width: 10 },
+  { header: 'Floor', key: 'floor', width: 16 },
+  { header: 'Location', key: 'location', width: 26 },
+  { header: 'Amenities', key: 'amenities', width: 36 },
+  { header: 'Restricted', key: 'restricted', width: 11 }
+];
+
+adminRouter.get('/rooms/template.xlsx', async (req, res, next) => {
+  try {
+    const buf = await workbookBuffer((wb) => {
+      sheet(wb, 'Rooms', ROOM_TEMPLATE_COLUMNS, [
+        { name: 'Ganga', capacity: 8, floor: '2nd floor', location: 'Head Office — Noida',
+          amenities: 'TV screen, Whiteboard', restricted: 'No' },
+        { name: 'Boardroom', capacity: 20, floor: '6th floor', location: 'Head Office — Noida',
+          amenities: 'Video conferencing, Whiteboard, Speakerphone', restricted: 'Yes' }
+      ]);
+      // Instructions travel with the file, because whoever fills it in is not
+      // necessarily the person who was shown the screen.
+      const help = wb.addWorksheet('How to fill this in');
+      help.columns = [{ width: 18 }, { width: 86 }];
+      [
+        ['Column', 'What to put'],
+        ['Name', 'Required. The room name staff will recognise. Must be unique — a name that already exists is skipped, never overwritten.'],
+        ['Capacity', 'Required. Whole number of seats, 1 to 1000. A request for more attendees than this is refused.'],
+        ['Floor', 'Optional, free text, e.g. "2nd floor".'],
+        ['Location', 'Optional, free text, e.g. "Head Office — Noida".'],
+        ['Amenities', 'Optional. Separate with commas, e.g. "TV screen, Whiteboard". Up to 12.'],
+        ['Restricted', 'Yes or No. Yes means only people it is allocated to can book it — allocate them afterwards on the Rooms screen.'],
+        ['', ''],
+        ['Rows', 'Delete the two example rows before uploading. Blank rows are ignored.'],
+        ['Result', 'Nothing is overwritten. After uploading you get a row-by-row report of what was created and what was skipped.']
+      ].forEach((r, i) => {
+        const row = help.addRow(r);
+        if (i === 0) { row.font = { bold: true, color: { argb: 'FFFFFFFF' } }; row.fill = HEAD_FILL_HELP; }
+        row.getCell(2).alignment = { wrapText: true, vertical: 'top' };
+      });
+    });
+    sendWorkbook(res, 'uneerooms-room-template.xlsx', buf);
+  } catch (e) { next(e); }
+});
+
+const YES = new Set(['yes', 'y', 'true', '1', 'restricted']);
+
+adminRouter.post('/rooms/import',
+  express.raw({ type: () => true, limit: '5mb' }),
+  async (req, res, next) => {
+    try {
+      if (!req.body || !req.body.length)
+        throw new AppError(400, 'NO_FILE', 'No file was received. Pick an .xlsx file and try again.');
+
+      let parsed;
+      try { parsed = await readSheet(req.body); }
+      catch { throw new AppError(400, 'BAD_FILE', 'That file could not be read as a spreadsheet. Use the template.'); }
+
+      if (!parsed.length)
+        throw new AppError(400, 'EMPTY', 'The sheet has no rows below the header.');
+      if (parsed.length > 500)
+        throw new AppError(400, 'TOO_MANY', `That sheet has ${parsed.length} rows. Upload at most 500 at a time.`);
+
+      const created = [], skipped = [];
+      for (const r of parsed) {
+        const name = (r.name || '').trim();
+        const capacity = Number(r.capacity);
+
+        if (!name || name.length < 2) { skipped.push({ row: r.row, name, reason: 'Name is missing or too short.' }); continue; }
+        if (name.length > 60) { skipped.push({ row: r.row, name, reason: 'Name is longer than 60 characters.' }); continue; }
+        if (!Number.isInteger(capacity) || capacity < 1 || capacity > 1000) {
+          skipped.push({ row: r.row, name, reason: `Capacity "${r.capacity || ''}" is not a whole number between 1 and 1000.` });
+          continue;
+        }
+        const amenities = (r.amenities || '').split(',').map((a) => a.trim()).filter(Boolean).slice(0, 12);
+
+        try {
+          const { rows } = await q(
+            `INSERT INTO rooms (name, location, floor, capacity, amenities, restricted)
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name`,
+            [name, (r.location || '').trim() || null, (r.floor || '').trim() || null,
+             capacity, amenities, YES.has(String(r.restricted || '').trim().toLowerCase())]
+          );
+          created.push({ row: r.row, id: rows[0].id, name: rows[0].name });
+        } catch (e) {
+          if (e.code === '23505') skipped.push({ row: r.row, name, reason: 'A room with that name already exists.' });
+          else throw e;
+        }
+      }
+
+      await audit(req.user.id, 'room.import', 'room', null,
+                  { created: created.length, skipped: skipped.length });
+      res.json({ read: parsed.length, created, skipped });
+    } catch (e) { next(e); }
+  });

@@ -16,7 +16,8 @@ export async function updateSettings(patch) {
     'org_name', 'work_start', 'work_end', 'slot_minutes',
     'employee_window_months', 'admin_window_months',
     'max_booking_minutes', 'allow_weekend',
-    'allow_self_registration', 'allowed_email_domains', 'auto_approve_senior'
+    'allow_self_registration', 'allowed_email_domains', 'auto_approve_senior',
+    'auto_approve_all'
   ];
   const keys = Object.keys(patch).filter((k) => allowed.includes(k));
   if (!keys.length) return getSettings(true);
