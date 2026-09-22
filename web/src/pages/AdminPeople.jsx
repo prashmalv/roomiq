@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { Eyebrow, Field, Loading, Modal, Notice } from '../components/ui.jsx';
@@ -131,16 +132,19 @@ export default function AdminPeople() {
                         {!u.is_active && <div className="mono" style={{ color: 'var(--bad)' }}>DEACTIVATED</div>}
                       </td>
                       <td>{u.department || '—'}</td>
-                      <td><span className="mono" style={{ letterSpacing: '0.14em', textTransform: 'uppercase' }}>{u.role}</span></td>
+                      <td><span className="mono" style={{ letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+                        {u.role === 'superadmin' ? 'super' : u.role}
+                      </span></td>
                       <td className="right num">{u.upcoming}</td>
                       <td className="right">
                         <div className="btn-row" style={{ justifyContent: 'flex-end' }}>
-                          <button className="btn btn-sec btn-sm"
-                                  disabled={u.id === user.id}
-                                  onClick={() => patch(u, { role: u.role === 'admin' ? 'employee' : 'admin' },
-                                                       `${u.name} is now ${u.role === 'admin' ? 'an employee' : 'an administrator'}.`)}>
-                            {u.role === 'admin' ? 'Make employee' : 'Make admin'}
-                          </button>
+                          {/* Being an administrator means administering a
+                              particular office, so it is granted there. */}
+                          <Link className="btn btn-sec btn-sm" to="/admin/offices"
+                                style={{ textDecoration: 'none' }}
+                                title="Administrators are appointed to an office">
+                            {u.role === 'employee' ? 'Make admin' : 'Offices'}
+                          </Link>
                           <button className="btn btn-sec btn-sm"
                                   onClick={() => patch(u, { is_senior: !u.is_senior },
                                                        u.is_senior
@@ -172,10 +176,9 @@ export default function AdminPeople() {
             <Field label="Full name"><input value={form.name} onChange={set('name')} required minLength={2} /></Field>
             <Field label="Work email"><input type="email" value={form.email} onChange={set('email')} required placeholder="name@uneecops.in" /></Field>
             <Field label="Department"><input value={form.department} onChange={set('department')} placeholder="Presales" /></Field>
-            <Field label="Role">
+            <Field label="Role — administrators are appointed on the Offices screen">
               <select value={form.role} onChange={set('role')}>
                 <option value="employee">Employee</option>
-                <option value="admin">Administrator</option>
               </select>
             </Field>
             <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 14, marginBottom: 18 }}>

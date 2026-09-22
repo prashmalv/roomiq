@@ -64,7 +64,7 @@ async function buildRoomSheet(rows) {
   const { default: ExcelJS } = await import('exceljs');
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Rooms');
-  const headers = ['Name', 'Capacity', 'Floor', 'Location', 'Amenities', 'Restricted'];
+  const headers = ['Office', 'Branch', 'Name', 'Capacity', 'Floor', 'Location', 'Amenities', 'Restricted'];
   ws.addRow(headers);
   for (const r of rows) ws.addRow(headers.map((h) => r[h]));
   return Buffer.from(await wb.xlsx.writeBuffer());
@@ -95,7 +95,16 @@ r = await emp('POST', '/api/auth/login', { email: 'rahul.verma@uneecops.in', pas
 ok('wrong password is rejected', r.status === 401);
 
 r = await adm('POST', '/api/auth/login', { email: 'admin@uneecops.in', password: 'Admin@123' });
-ok('admin can sign in', r.status === 200 && r.body.user.role === 'admin', JSON.stringify(r.body));
+// The bootstrap account is a superadmin: an ordinary admin is scoped to the
+// offices it is appointed to, and the first account has nobody to appoint it.
+ok('the super admin can sign in', r.status === 200 && r.body.user.role === 'superadmin', JSON.stringify(r.body));
+
+// Offices are reference data applied by the migration, and rooms live in them.
+r = await adm('GET', '/api/admin/branches');
+const branches = r.body.branches || [];
+ok('offices and branches exist', branches.length >= 10, `${branches.length} branches`);
+const noidaBranch = branches.find((b) => b.location_name === 'Noida');
+ok('Noida is one of them', !!noidaBranch, JSON.stringify(branches.map((b) => b.location_name)));
 
 // -------------------------------------------------------------- window ----
 console.log('\nbooking window');
@@ -209,9 +218,16 @@ r = await emp('GET', '/api/admin/stats');
 ok('employees are locked out of admin routes', r.status === 403);
 
 r = await adm('POST', '/api/admin/rooms', {
+  branch_id: noidaBranch.id,
   name: `Smoke Room ${Date.now() % 10000}`, capacity: 6, floor: '2nd floor', amenities: ['TV screen']
 });
-ok('admin can create a room', r.status === 201, JSON.stringify(r.body));
+ok('admin can create a room in an office', r.status === 201, JSON.stringify(r.body));
+
+r = await adm('POST', '/api/admin/rooms', {
+  name: `Homeless Room ${Date.now() % 10000}`, capacity: 6, amenities: []
+});
+ok('a room cannot be created without an office',
+   r.status === 400 && /branch_id/.test(r.body.error.message), JSON.stringify(r.body.error));
 
 // --------------------------------------------------- self-registration ----
 // Unique per run so the suite can be re-run without colliding on the email.
@@ -605,11 +621,12 @@ ok('employees cannot download the register', r.status === 403, JSON.stringify(r.
 // ---------------------------------------------------- bulk room upload -----
 console.log('\nbulk room upload');
 const xlsx = await buildRoomSheet([
-  { Name: `Smoke Room A ${stamp}`, Capacity: 6, Floor: '1st floor', Location: 'HQ', Amenities: 'TV screen, Whiteboard', Restricted: 'No' },
-  { Name: `Smoke Room B ${stamp}`, Capacity: 12, Floor: '5th floor', Location: 'HQ', Amenities: 'Video conferencing', Restricted: 'Yes' },
-  { Name: 'Ganges', Capacity: 10, Floor: '3rd floor', Location: 'HQ', Amenities: '', Restricted: 'No' },
-  { Name: '', Capacity: 8, Floor: '', Location: '', Amenities: '', Restricted: 'No' },
-  { Name: `Smoke Bad ${stamp}`, Capacity: 'eight', Floor: '', Location: '', Amenities: '', Restricted: 'No' }
+  { Office: 'Noida', Branch: 'Q Tower', Name: `Smoke Room A ${stamp}`, Capacity: 6, Floor: '1st floor', Location: 'HQ', Amenities: 'TV screen, Whiteboard', Restricted: 'No' },
+  { Office: 'Bangalore', Branch: 'Bhive Workspace', Name: `Smoke Room B ${stamp}`, Capacity: 12, Floor: '3rd floor', Location: 'Hosur Rd', Amenities: 'Video conferencing', Restricted: 'Yes' },
+  { Office: 'Noida', Branch: 'Q Tower', Name: 'Ganges', Capacity: 10, Floor: '3rd floor', Location: 'HQ', Amenities: '', Restricted: 'No' },
+  { Office: 'Noida', Branch: 'Q Tower', Name: '', Capacity: 8, Floor: '', Location: '', Amenities: '', Restricted: 'No' },
+  { Office: 'Noida', Branch: 'Q Tower', Name: `Smoke Bad ${stamp}`, Capacity: 'eight', Floor: '', Location: '', Amenities: '', Restricted: 'No' },
+  { Office: 'Atlantis', Branch: 'Nowhere', Name: `Smoke Nowhere ${stamp}`, Capacity: 4, Floor: '', Location: '', Amenities: '', Restricted: 'No' }
 ]);
 r = await admUpload('/api/admin/rooms/import', xlsx);
 ok('the upload is accepted', r.status === 200, JSON.stringify(r.body?.error));
@@ -619,6 +636,10 @@ ok('a duplicate name is skipped rather than overwritten',
 ok('a missing name is reported with its sheet row',
    r.body.skipped.some((x) => /Name is missing/.test(x.reason) && x.row > 1), JSON.stringify(r.body.skipped));
 ok('a non-numeric capacity is reported', r.body.skipped.some((x) => /Capacity/.test(x.reason)));
+ok('a row naming an office that does not exist is reported',
+   r.body.skipped.some((x) => /No branch "Nowhere" in office "Atlantis"/.test(x.reason)), JSON.stringify(r.body.skipped));
+ok('one sheet can create rooms in more than one office',
+   r.body.created.length === 2, JSON.stringify(r.body.created?.map((c) => c.name)));
 
 r = await admUpload('/api/admin/rooms/import', Buffer.from('this is not a spreadsheet'));
 ok('a file that is not a workbook is refused', r.status === 400 && r.body.error.code === 'BAD_FILE', JSON.stringify(r.body));
@@ -628,6 +649,97 @@ ok('the approve-everything fallback can be switched on',
    r.status === 200 && r.body.settings.auto_approve_all === true);
 r = await adm('PATCH', '/api/admin/settings', { auto_approve_all: false });
 ok('and switched back off', r.body.settings.auto_approve_all === false);
+
+// ------------------------------------------------------------- offices ----
+console.log('\noffices and scoped administrators');
+const blrAdmin = session();
+r = await adm('GET', '/api/locations/admin');
+ok('a superadmin sees every office', r.status === 200 && r.body.scoped === false && r.body.locations.length >= 10,
+   JSON.stringify({ scoped: r.body.scoped, n: r.body.locations?.length }));
+const blr = r.body.locations.find((l) => l.name === 'Bangalore');
+const noida = r.body.locations.find((l) => l.name === 'Noida');
+ok('Bangalore and Noida are both offices', !!blr && !!noida);
+
+r = await adm('POST', '/api/admin/users', {
+  name: 'Smoke Blr Admin', email: `smoke.blr.${stamp}@uneecops.in`,
+  department: 'Admin & Facilities', password: 'Testing@123'
+});
+ok('a new person starts as an employee', r.status === 201 && r.body.user.role === 'employee', JSON.stringify(r.body.user));
+const blrAdminId = r.body.user.id;
+
+r = await adm('POST', `/api/locations/admin/${blr.id}/admins`, { userId: blrAdminId });
+ok('appointing somebody to an office makes them an administrator',
+   r.status === 200 && r.body.promoted === true, JSON.stringify(r.body));
+
+r = await blrAdmin('POST', '/api/auth/login', { email: `smoke.blr.${stamp}@uneecops.in`, password: 'Testing@123' });
+ok('the new administrator can sign in as one', r.status === 200 && r.body.user.role === 'admin');
+
+r = await blrAdmin('GET', '/api/locations/admin');
+ok('an administrator sees only their own office',
+   r.body.scoped === true && r.body.locations.length === 1 && r.body.locations[0].name === 'Bangalore',
+   JSON.stringify(r.body.locations?.map((l) => l.name)));
+
+r = await blrAdmin('GET', '/api/admin/rooms');
+ok('and only rooms in it', r.body.rooms.every((x) => x.location_name === 'Bangalore'),
+   JSON.stringify([...new Set(r.body.rooms.map((x) => x.location_name))]));
+
+const noidaBr = branches.find((b) => b.location_name === 'Noida');
+r = await blrAdmin('POST', '/api/admin/rooms', {
+  branch_id: noidaBr.id, name: `Trespass ${stamp}`, capacity: 4, amenities: []
+});
+ok('an administrator cannot create a room in an office they do not run',
+   r.status === 403 && r.body.error.code === 'NOT_YOUR_OFFICE', JSON.stringify(r.body));
+
+r = await blrAdmin('GET', '/api/admin/branches');
+const blrBranch = r.body.branches[0];
+ok('they can only choose branches in their own office',
+   r.body.branches.every((b) => b.location_name === 'Bangalore'), JSON.stringify(r.body.branches?.length));
+
+r = await blrAdmin('POST', '/api/admin/rooms', {
+  branch_id: blrBranch.id, name: `Cauvery ${stamp}`, capacity: 10, amenities: ['TV screen']
+});
+ok('but can in their own', r.status === 201, JSON.stringify(r.body.error));
+const blrRoom = r.body.room;
+
+r = await blrAdmin('POST', `/api/locations/admin/${blr.id}/branches`, { name: `Sneaky ${stamp}` });
+ok('only a superadmin may add branches', r.status === 403 && r.body.error.code === 'SUPERADMIN_ONLY');
+r = await blrAdmin('POST', `/api/locations/admin/${blr.id}/admins`, { userId: blrAdminId });
+ok('only a superadmin may appoint administrators', r.status === 403 && r.body.error.code === 'SUPERADMIN_ONLY');
+
+// The point of all this: mail follows the room's office.
+const traveller = session();
+r = await traveller('POST', '/api/auth/register', {
+  name: 'Smoke Traveller', email: `smoke.travel.${stamp}@uneecops.in`, password: 'Testing@123'
+});
+ok('a traveller can sign up', r.status === 201);
+
+r = await traveller('GET', `/api/availability/suggestions?duration=60&attendees=2&location=${blr.id}`);
+ok('an employee can look for a room in another city',
+   r.body.suggestions?.length > 0 && r.body.suggestions.every((x) => x.office === 'Bangalore'),
+   JSON.stringify([...new Set((r.body.suggestions || []).map((x) => x.office))]));
+const blrSlot = r.body.suggestions.find((x) => x.roomId === blrRoom.id) || r.body.suggestions[0];
+
+r = await traveller('POST', '/api/bookings', {
+  roomId: blrSlot.roomId, title: 'Bangalore client visit', attendees: 2,
+  date: blrSlot.date, start: blrSlot.start, end: blrSlot.end
+});
+ok('and book it', r.status === 201 && r.body.booking.status === 'pending', JSON.stringify(r.body.error));
+ok('the booking knows which office it is in', r.body.booking.room.office === 'Bangalore', JSON.stringify(r.body.booking.room));
+const blrBooking = r.body.booking;
+
+r = await adm('GET', '/api/admin/outbox');
+const blrNotices = r.body.mails.filter((m) => m.kind === 'booking_requested' && m.booking_id === blrBooking.id);
+ok('the approval mail went to the Bangalore administrator',
+   blrNotices.some((m) => m.to_email === `smoke.blr.${stamp}@uneecops.in`),
+   JSON.stringify(blrNotices.map((m) => m.to_email)));
+ok('and to nobody in Noida',
+   !blrNotices.some((m) => m.to_email === 'neha.sharma@uneecops.in'),
+   JSON.stringify(blrNotices.map((m) => m.to_email)));
+
+// Losing the last appointment should lose the role with it.
+r = await adm('DELETE', `/api/locations/admin/${blr.id}/admins/${blrAdminId}`);
+ok('removing the last appointment returns them to employee',
+   r.status === 200 && r.body.demoted === true, JSON.stringify(r.body));
 
 // -------------------------------------------------------------- report ----
 console.log(`\n${pass} passed, ${fail} failed\n`);

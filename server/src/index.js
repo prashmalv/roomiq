@@ -20,6 +20,7 @@ import { bookingsRouter } from './routes/bookings.js';
 import { adminRouter } from './routes/admin.js';
 import { passRouter } from './routes/pass.js';
 import { decideRouter } from './routes/decide.js';
+import { locationsRouter } from './routes/locations.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webDist = join(here, '..', '..', 'web', 'dist');
@@ -57,6 +58,7 @@ app.use('/api/bookings', bookingsRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/pass', passRouter);
 app.use('/api/decide', decideRouter);
+app.use('/api/locations', locationsRouter);
 
 app.use('/api', (_req, _res, next) => next(new AppError(404, 'NO_ROUTE', 'Unknown endpoint.')));
 

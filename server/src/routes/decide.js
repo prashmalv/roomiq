@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
-import { resolveDecisionToken } from '../lib/auth.js';
+import { resolveDecisionToken, canAdminister } from '../lib/auth.js';
 import { applyDecision, loadBooking, shape } from './bookings.js';
 import { AppError } from '../lib/rules.js';
 
@@ -23,6 +23,10 @@ decideRouter.get('/:token', decideLimit, async (req, res, next) => {
     const { admin, bookingId } = await resolveDecisionToken(req.params.token);
     const b = await loadBooking(bookingId);
     if (!b) throw new AppError(404, 'NOT_FOUND', 'That booking no longer exists.');
+    // Appointments change: a link minted before someone left an office must
+    // stop working for it.
+    if (!(await canAdminister(admin, b.location_id)))
+      throw new AppError(403, 'NOT_YOUR_OFFICE', 'You no longer administer that office.');
     res.json({
       booking: shape(b, true),
       admin: { name: admin.name, email: admin.email },
@@ -39,6 +43,11 @@ decideRouter.post('/:token', decideLimit, async (req, res, next) => {
     }).parse(req.body || {});
 
     const { admin, bookingId } = await resolveDecisionToken(req.params.token);
+    const pre = await loadBooking(bookingId);
+    if (!pre) throw new AppError(404, 'NOT_FOUND', 'That booking no longer exists.');
+    if (!(await canAdminister(admin, pre.location_id)))
+      throw new AppError(403, 'NOT_YOUR_OFFICE', 'You no longer administer that office.');
+
     const { booking, promoted } = await applyDecision({
       bookingId,
       decision: body.action === 'approve' ? 'approved' : 'rejected',

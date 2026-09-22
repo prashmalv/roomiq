@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { addMonths, api, bookingFlash, fmtLongDate, fmtMonth, monthOf, parseISO, todayISO } from '../api.js';
-import { useAuth } from '../auth.jsx';
+import { useAuth, isAdminRole } from '../auth.jsx';
 import { Eyebrow, Loading, Notice } from '../components/ui.jsx';
 import DayGrid from '../components/DayGrid.jsx';
 import BookDialog from '../components/BookDialog.jsx';
@@ -9,7 +9,7 @@ const WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 export default function Calendar() {
   const { user, window: win, settings } = useAuth();
-  const isAdmin = user.role === 'admin';
+  const isAdmin = isAdminRole(user.role);
 
   const [month, setMonth] = useState(monthOf(todayISO()));
   const [date, setDate] = useState(todayISO());

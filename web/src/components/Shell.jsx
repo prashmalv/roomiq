@@ -20,9 +20,10 @@ export default function Shell({ children }) {
             <NavLink to="/" end className={link}>Dashboard</NavLink>
             <NavLink to="/calendar" className={link}>Calendar</NavLink>
             <NavLink to="/bookings" className={link}>My bookings</NavLink>
-            {user.role === 'admin' && (
+            {['admin', 'superadmin'].includes(user.role) && (
               <>
                 <NavLink to="/admin/approvals" className={link}>Approvals</NavLink>
+                <NavLink to="/admin/offices" className={link}>Offices</NavLink>
                 <NavLink to="/admin/rooms" className={link}>Rooms</NavLink>
                 <NavLink to="/admin/people" className={link}>People</NavLink>
                 <NavLink to="/admin/settings" className={link}>Settings</NavLink>

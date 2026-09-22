@@ -18,13 +18,14 @@ import AdminApprovals from './pages/AdminApprovals.jsx';
 import AdminRooms from './pages/AdminRooms.jsx';
 import AdminPeople from './pages/AdminPeople.jsx';
 import AdminSettings from './pages/AdminSettings.jsx';
+import AdminOffices from './pages/AdminOffices.jsx';
 
 function Private({ children, adminOnly }) {
   const { loading, user } = useAuth();
   const loc = useLocation();
   if (loading) return <div className="shell"><Loading /></div>;
   if (!user) return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
-  if (adminOnly && user.role !== 'admin') return <Navigate to="/" replace />;
+  if (adminOnly && !['admin', 'superadmin'].includes(user.role)) return <Navigate to="/" replace />;
   return <Shell>{children}</Shell>;
 }
 
@@ -41,6 +42,7 @@ function App() {
       <Route path="/bookings" element={<Private><MyBookings /></Private>} />
       <Route path="/profile" element={<Private><Profile /></Private>} />
       <Route path="/admin/approvals" element={<Private adminOnly><AdminApprovals /></Private>} />
+      <Route path="/admin/offices" element={<Private adminOnly><AdminOffices /></Private>} />
       <Route path="/admin/rooms" element={<Private adminOnly><AdminRooms /></Private>} />
       <Route path="/admin/people" element={<Private adminOnly><AdminPeople /></Private>} />
       <Route path="/admin/settings" element={<Private adminOnly><AdminSettings /></Private>} />

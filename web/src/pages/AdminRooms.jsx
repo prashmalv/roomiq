@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { Eyebrow, Field, Loading, Modal, Notice } from '../components/ui.jsx';
 
-const blank = { name: '', location: 'Head Office — Noida', floor: '', capacity: 8, amenities: '', restricted: false, is_active: true };
+const blank = { branch_id: '', name: '', location: '', floor: '', capacity: 8, amenities: '', restricted: false, is_active: true };
 
 export default function AdminRooms() {
   const [rooms, setRooms] = useState(null);
@@ -16,10 +16,15 @@ export default function AdminRooms() {
   const [error, setError] = useState('');
   const [importing, setImporting] = useState(false);
   const [report, setReport] = useState(null);
+  const [branches, setBranches] = useState([]);
 
   const load = useCallback(async () => {
-    const [r, u] = await Promise.all([api.get('/api/admin/rooms'), api.get('/api/admin/users')]);
-    setRooms(r.rooms); setPeople(u.users.filter((x) => x.is_active));
+    const [r, u, b] = await Promise.all([
+      api.get('/api/admin/rooms'), api.get('/api/admin/users'), api.get('/api/admin/branches')
+    ]);
+    setRooms(r.rooms); setPeople(u.users.filter((x) => x.is_active)); setBranches(b.branches);
+    // A room must sit in a branch, so preselect the only sensible default.
+    setForm((f) => (f.branch_id ? f : { ...f, branch_id: b.branches[0]?.id || '' }));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -28,6 +33,7 @@ export default function AdminRooms() {
       : e.target.type === 'number' ? Number(e.target.value) : e.target.value }));
 
   const payload = (f) => ({
+    branch_id: f.branch_id,
     name: f.name.trim(),
     location: f.location?.trim() || null,
     floor: f.floor?.trim() || null,
@@ -197,6 +203,18 @@ export default function AdminRooms() {
           <Eyebrow>Add a room</Eyebrow>
           <h3 style={{ margin: '10px 0 18px' }}>New meeting room</h3>
           <form onSubmit={create}>
+            <Field label="Office and branch">
+              <select value={form.branch_id} onChange={set('branch_id')} required>
+                {branches.length === 0 && <option value="">No branch you administer</option>}
+                {[...new Set(branches.map((b) => b.location_name))].map((office) => (
+                  <optgroup key={office} label={office}>
+                    {branches.filter((b) => b.location_name === office).map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </Field>
             <Field label="Name"><input value={form.name} onChange={set('name')} required minLength={2} placeholder="Sutlej" /></Field>
             <Field label="Location"><input value={form.location} onChange={set('location')} /></Field>
             <div className="grid-2">

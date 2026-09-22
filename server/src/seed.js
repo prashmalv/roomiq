@@ -27,24 +27,32 @@ const PEOPLE = [
 async function main() {
   await migrate();
 
-  // --- admin from env, always present -------------------------------------
+  // --- super admin from env, always present --------------------------------
+  // Superadmin, not admin: an ordinary administrator only sees the offices they
+  // are appointed to, and this account is the one that does the appointing.
   const adminHash = await hashPassword(config.seedAdminPassword);
   await q(
     `INSERT INTO users (name, email, password_hash, role, department)
-     VALUES ($1,$2,$3,'admin','Admin & Facilities')
-     ON CONFLICT (email) DO UPDATE SET role='admin', is_active=true`,
+     VALUES ($1,$2,$3,'superadmin','Admin & Facilities')
+     ON CONFLICT (email) DO UPDATE SET role='superadmin', is_active=true`,
     ['Facilities Admin', config.seedAdminEmail, adminHash]
   );
-  console.log(`[seed] admin ready: ${config.seedAdminEmail}`);
+  console.log(`[seed] super admin ready: ${config.seedAdminEmail}`);
 
   if (!config.seedDemoData) { console.log('[seed] demo data disabled'); return; }
 
   // --- rooms ---------------------------------------------------------------
+  // The offices themselves come from the migration; the demo rooms all sit in
+  // Noida, which is the office this started for.
+  const { rows: [noidaBranch] } = await q(
+    `SELECT br.id, br.location_id FROM branches br JOIN locations l ON l.id = br.location_id
+      WHERE l.name = 'Noida' ORDER BY br.created_at LIMIT 1`
+  );
   for (const [name, location, floor, capacity, amenities, restricted] of ROOMS) {
     await q(
-      `INSERT INTO rooms (name, location, floor, capacity, amenities, restricted)
-       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (name) DO NOTHING`,
-      [name, location, floor, capacity, amenities, restricted]
+      `INSERT INTO rooms (name, location, floor, capacity, amenities, restricted, branch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (name) DO NOTHING`,
+      [name, location, floor, capacity, amenities, restricted, noidaBranch?.id || null]
     );
   }
 
@@ -56,6 +64,19 @@ async function main() {
        VALUES ($1,$2,$3,$4,$5) ON CONFLICT (email) DO NOTHING`,
       [name, email.toLowerCase(), demoHash, role, dept]
     );
+  }
+
+  /* An administrator with no office administers nothing, so the demo admins are
+     appointed to Noida — otherwise signing in as one shows an empty app and
+     looks like a bug. */
+  if (noidaBranch) {
+    await q(
+      `INSERT INTO location_admins (location_id, user_id)
+       SELECT $1, id FROM users WHERE role = 'admin'   -- not the superadmin
+       ON CONFLICT DO NOTHING`,
+      [noidaBranch.location_id]
+    );
+    await q(`UPDATE users SET location_id = $1 WHERE location_id IS NULL`, [noidaBranch.location_id]);
   }
 
   const { rows: users } = await q(`SELECT id, name, email, role FROM users ORDER BY role, name`);

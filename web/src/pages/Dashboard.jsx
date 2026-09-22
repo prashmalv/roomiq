@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, bookingFlash, durationLabel, fmtLongDate, todayISO } from '../api.js';
-import { useAuth } from '../auth.jsx';
+import { useAuth, isAdminRole } from '../auth.jsx';
 import { Eyebrow, KPI, Loading, Notice, StatusChip } from '../components/ui.jsx';
 import DayGrid from '../components/DayGrid.jsx';
 import BookDialog from '../components/BookDialog.jsx';
@@ -10,7 +10,7 @@ const DURATIONS = [30, 45, 60, 90, 120, 180];
 
 export default function Dashboard() {
   const { user, settings } = useAuth();
-  const isAdmin = user.role === 'admin';
+  const isAdmin = isAdminRole(user.role);
   const today = todayISO();
 
   const [duration, setDuration] = useState(60);
@@ -21,23 +21,39 @@ export default function Dashboard() {
   const [mine, setMine] = useState([]);
   const [stats, setStats] = useState(null);
   const [dialog, setDialog] = useState(null);
+  const [offices, setOffices] = useState([]);
+  const [office, setOffice] = useState('');
   const [flash, setFlash] = useState('');
 
   const loadAll = useCallback(async () => {
     const [r, d, m] = await Promise.all([
-      api.get('/api/rooms'),
-      api.get(`/api/availability/day?date=${today}`),
+      api.get(`/api/rooms${office ? `?location=${office}` : ''}`),
+      api.get(`/api/availability/day?date=${today}${office ? `&location=${office}` : ''}`),
       api.get('/api/bookings/mine?scope=upcoming')
     ]);
     setRooms(r.rooms); setDay(d); setMine(m.bookings);
     if (isAdmin) api.get('/api/admin/stats').then((s) => setStats(s.stats)).catch(() => {});
-  }, [today, isAdmin]);
+  }, [today, isAdmin, office]);
 
   const loadSuggestions = useCallback(async () => {
     setSuggestions(null);
-    const s = await api.get(`/api/availability/suggestions?duration=${duration}&attendees=${attendees}`);
+    const s = await api.get(`/api/availability/suggestions?duration=${duration}&attendees=${attendees}${office ? `&location=${office}` : ''}`);
     setSuggestions(s.suggestions);
-  }, [duration, attendees]);
+  }, [duration, attendees, office]);
+
+  // The office list drives the picker; a person's own office is preselected so
+  // the page opens where they actually sit.
+  useEffect(() => {
+    api.get('/api/locations')
+      .then((d) => {
+        setOffices(d.locations);
+        if (user.locationId) {
+          const mine = d.locations.find((l) => l.id === user.locationId);
+          if (mine) setOffice(mine.id);
+        }
+      })
+      .catch(() => {});
+  }, [user.locationId]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => { loadSuggestions(); }, [loadSuggestions]);
@@ -108,6 +124,16 @@ export default function Dashboard() {
               <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
                 {DURATIONS.filter((d) => d <= settings.max_booking_minutes)
                   .map((d) => <option key={d} value={d}>{durationLabel(d)}</option>)}
+              </select>
+            </label>
+            <label className="field"><span>Office</span>
+              <select value={office} onChange={(e) => setOffice(e.target.value)}>
+                <option value="">Every office</option>
+                {offices.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}{l.rooms ? ` — ${l.rooms} room${l.rooms === 1 ? '' : 's'}` : ' — no rooms'}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="field"><span>Attendees</span>

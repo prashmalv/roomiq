@@ -29,10 +29,12 @@ export const timeToMin = toMin;
  *             rolls forward on the 1st automatically, it is not "60 days".
  *  admin    — any day up to `admin_window_months` ahead (default one year).
  */
+export const ADMIN_ROLES = ['admin', 'superadmin'];
+
 export function bookingWindow(role, settings, from = nowLocal()) {
   const minDate = from.toISODate();
   const maxDate =
-    role === 'admin'
+    ADMIN_ROLES.includes(role)
       ? from.plus({ months: settings.admin_window_months }).toISODate()
       : from.plus({ months: settings.employee_window_months - 1 }).endOf('month').toISODate();
   return { minDate, maxDate, role };
@@ -65,7 +67,7 @@ export function validateBookingRequest({ role, booking_date, start_time, end_tim
     throw new AppError(
       403,
       'OUTSIDE_WINDOW',
-      role === 'admin'
+      ADMIN_ROLES.includes(role)
         ? `Admins can book up to ${w.maxDate}.`
         : `Employees can only book up to ${w.maxDate} (this month and next). Ask an admin for a later date.`,
       { maxDate: w.maxDate }

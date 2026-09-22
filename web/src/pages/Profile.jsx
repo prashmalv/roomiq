@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api.js';
-import { useAuth } from '../auth.jsx';
+import { useAuth, isAdminRole } from '../auth.jsx';
 import { Eyebrow, Field, Notice } from '../components/ui.jsx';
 
 /**
@@ -74,7 +74,8 @@ export default function Profile() {
           <dl style={{ margin: 0 }}>
             {[
               ['Email', user.email],
-              ['Role', user.role === 'admin' ? 'Administrator' : 'Employee'],
+              ['Role', user.role === 'superadmin' ? 'Super administrator'
+                       : user.role === 'admin' ? 'Administrator' : 'Employee'],
               ['Department', user.department || '—'],
               ['Senior leadership', user.isSenior ? 'Yes' : 'No']
             ].map(([k, v]) => (
@@ -92,7 +93,7 @@ export default function Profile() {
                 : 'Your requests are shown to facilities ahead of the general queue.'}
             </p>
           )}
-          {user.role === 'admin' && (
+          {isAdminRole(user.role) && (
             <p className="mono muted" style={{ marginTop: 'var(--s-4)' }}>
               Resetting someone else's password is on the People screen.
             </p>

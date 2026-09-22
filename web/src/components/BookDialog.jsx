@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, addMinutes, fmtDate, fmtLongDate, minutesBetween } from '../api.js';
-import { useAuth } from '../auth.jsx';
+import { useAuth, isAdminRole } from '../auth.jsx';
 import { Modal, Field, Notice } from './ui.jsx';
 
 const DURATIONS = [30, 45, 60, 90, 120, 180, 240];
 
 export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
   const { user, window: win, settings } = useAuth();
-  const isAdmin = user.role === 'admin';
+  const isAdmin = isAdminRole(user.role);
 
   const [form, setForm] = useState(() => ({
     roomId: prefill?.roomId || rooms.find((r) => r.can_book)?.id || '',
@@ -111,13 +111,20 @@ export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
       }
     >
       <form id="book-form" onSubmit={submit}>
+        {/* Grouped by office: the company has ten, and a flat list of every
+            room in all of them is unusable. */}
         <Field label="Room">
           <select value={form.roomId} onChange={set('roomId')} required>
-            {rooms.map((r) => (
-              <option key={r.id} value={r.id} disabled={!r.can_book}>
-                {r.name} — {r.capacity} seats{r.floor ? `, ${r.floor}` : ''}
-                {r.can_book ? '' : ' (restricted)'}
-              </option>
+            {[...new Set(rooms.map((r) => r.location_name || 'Unassigned'))].map((office) => (
+              <optgroup key={office} label={office}>
+                {rooms.filter((r) => (r.location_name || 'Unassigned') === office).map((r) => (
+                  <option key={r.id} value={r.id} disabled={!r.can_book}>
+                    {r.name} — {r.capacity} seats
+                    {r.branch_name ? `, ${r.branch_name}` : ''}{r.floor ? `, ${r.floor}` : ''}
+                    {r.can_book ? '' : ' (restricted)'}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </Field>
@@ -177,6 +184,12 @@ export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
           </Field>
         )}
 
+        {room?.location_name && (
+          <p className="mono" style={{ color: 'var(--ink-3)', marginBottom: 12 }}>
+            {room.location_name}{room.branch_name ? ` · ${room.branch_name}` : ''} — this request
+            goes to that office's administrators.
+          </p>
+        )}
         <p className="mono" style={{ color: 'var(--ink-3)', marginBottom: 12 }}>
           {form.repeat === 'none'
             ? `${fmtLongDate(form.date)} · ${form.start}–${end}`

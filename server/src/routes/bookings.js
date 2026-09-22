@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { q, audit } from '../lib/db.js';
-import { requireAuth } from '../lib/auth.js';
+import { requireAuth, isAdmin } from '../lib/auth.js';
 import { getSettings } from '../lib/settings.js';
 import { AppError, validateBookingRequest, bookingWindow, nowLocal, todayISO, repeatDates } from '../lib/rules.js';
 import { passCode } from '../lib/passcode.js';
@@ -11,6 +11,8 @@ export const bookingsRouter = Router();
 
 export const BOOKING_VIEW = `
   SELECT b.*, r.name AS room_name, r.floor, r.location, r.capacity,
+         br.id AS branch_id, br.name AS branch_name,
+         loc.id AS location_id, loc.name AS location_name, loc.city AS location_city,
          ctd.n AS contested_n, ctd.people AS contested_people, blk.people AS blocked_people,
          wl.pos AS waitlist_pos,
          uf.name AS for_name, uf.email AS for_email, uf.department AS for_department,
@@ -19,6 +21,8 @@ export const BOOKING_VIEW = `
          ud.name AS decided_by_name
     FROM bookings b
     JOIN rooms r  ON r.id  = b.room_id
+    LEFT JOIN branches br ON br.id = r.branch_id
+    LEFT JOIN locations loc ON loc.id = br.location_id
     JOIN users uf ON uf.id = b.booked_for
     JOIN users ub ON ub.id = b.requested_by
     LEFT JOIN users ud ON ud.id = b.decided_by
@@ -48,7 +52,9 @@ export async function loadBooking(id) {
 
 export const shape = (b, asAdmin = false) => ({
   id: b.id,
-  room: { id: b.room_id, name: b.room_name, floor: b.floor, location: b.location, capacity: b.capacity },
+  room: { id: b.room_id, name: b.room_name, floor: b.floor, location: b.location, capacity: b.capacity,
+          branch: b.branch_name || null, office: b.location_name || null, city: b.location_city || null },
+  locationId: b.location_id || null,
   title: b.title,
   purpose: b.purpose,
   attendees: b.attendees,
@@ -133,7 +139,7 @@ export async function promoteFromWaitlist(freed) {
                   { released: freed.id, room: promoted.room_name, date: promoted.booking_date });
       await queueMail('booking_from_waitlist',
                       { name: promoted.for_name, email: promoted.for_email }, promoted, promoted.id);
-      for (const a of await adminRecipients())
+      for (const a of await adminRecipients(promoted.location_id))
         await queueMail('booking_from_waitlist_notice', a, promoted, promoted.id);
       flushSoon();
       return promoted;
@@ -211,9 +217,9 @@ bookingsRouter.post('/', requireAuth, async (req, res, next) => {
   try {
     const settings = await getSettings();
     const body = createSchema.parse(req.body);
-    const isAdmin = req.user.role === 'admin';
+    const actorIsAdmin = isAdmin(req.user);
 
-    if (body.bookedFor && body.bookedFor !== req.user.id && !isAdmin)
+    if (body.bookedFor && body.bookedFor !== req.user.id && !actorIsAdmin)
       throw new AppError(403, 'ADMIN_ONLY', 'Only an administrator can book on behalf of someone else.');
 
     const targetId = body.bookedFor || req.user.id;
@@ -227,7 +233,7 @@ bookingsRouter.post('/', requireAuth, async (req, res, next) => {
       `SELECT r.*, (r.restricted = false OR $2 OR ra.user_id IS NOT NULL) AS allowed
          FROM rooms r LEFT JOIN room_access ra ON ra.room_id = r.id AND ra.user_id = $3
         WHERE r.id = $1 AND r.is_active`,
-      [body.roomId, isAdmin, targetId]
+      [body.roomId, actorIsAdmin, targetId]
     );
     if (!room) throw new AppError(404, 'NO_ROOM', 'That room does not exist or is inactive.');
     if (!room.allowed)
@@ -248,12 +254,12 @@ bookingsRouter.post('/', requireAuth, async (req, res, next) => {
        separate check: the exclusion constraint only lets the insert succeed if
        the slot was actually clear, so a successful write *is* the proof. */
     const isSenior = !!target.is_senior;
-    const autoApproved = !isAdmin &&
+    const autoApproved = !actorIsAdmin &&
       ((isSenior && !!settings.auto_approve_senior) || !!settings.auto_approve_all);
-    const status = isAdmin || autoApproved ? 'approved' : 'pending';
+    const status = actorIsAdmin || autoApproved ? 'approved' : 'pending';
     // decided_by stays NULL for a system decision — that is what distinguishes
     // "approved by system" from "approved by an administrator".
-    const decider = isAdmin ? req.user.id : null;
+    const decider = actorIsAdmin ? req.user.id : null;
 
     // A repeat runs to the end of the week that holds the first date, no further.
     const dates = repeatDates(body.date, body.repeat, settings);
@@ -298,7 +304,7 @@ bookingsRouter.post('/', requireAuth, async (req, res, next) => {
         if (body.waitlist && blocker) {
           const { rows } = await insert('waitlisted', true);
           created.push(await loadBooking(rows[0].id));
-        } else if (isSenior && !isAdmin && blocker && blocker.status === 'pending') {
+        } else if (isSenior && !actorIsAdmin && blocker && blocker.status === 'pending') {
           const { rows } = await insert('contested', true);
           created.push(await loadBooking(rows[0].id));
         } else {
@@ -334,15 +340,15 @@ bookingsRouter.post('/', requireAuth, async (req, res, next) => {
         await queueMail('booking_waitlisted', { name: b.for_name, email: b.for_email }, b, b.id);
       } else if (contested) {
         await queueMail('booking_contested_ack', { name: b.for_name, email: b.for_email }, b, b.id);
-        for (const a of await adminRecipients())
+        for (const a of await adminRecipients(b.location_id))
           await queueMail('booking_contested', a, b, b.id);
       } else if (b.status === 'pending') {
-        for (const a of await adminRecipients())
+        for (const a of await adminRecipients(b.location_id))
           await queueMail('booking_requested', a, b, b.id);
       } else if (b.auto_approved) {
         await queueMail('booking_auto_approved', { name: b.for_name, email: b.for_email }, b, b.id);
         // Facilities still hear about it — auto-approved is not the same as invisible.
-        for (const a of await adminRecipients())
+        for (const a of await adminRecipients(b.location_id))
           await queueMail('booking_auto_approved_notice', a, b, b.id);
       } else if (targetId !== req.user.id) {
         await queueMail('booking_allocated', { name: b.for_name, email: b.for_email }, b, b.id);
@@ -386,7 +392,7 @@ bookingsRouter.get('/:id', requireAuth, async (req, res, next) => {
     if (!b) throw new AppError(404, 'NOT_FOUND', 'Booking not found.');
     if (req.user.role !== 'admin' && b.booked_for !== req.user.id && b.requested_by !== req.user.id)
       throw new AppError(403, 'FORBIDDEN', 'This booking is not yours.');
-    res.json({ booking: shape(b, req.user.role === 'admin') });
+    res.json({ booking: shape(b, isAdmin(req.user)) });
   } catch (e) { next(e); }
 });
 
@@ -413,7 +419,7 @@ bookingsRouter.post('/:id/cancel', requireAuth, async (req, res, next) => {
 
     await queueMail('booking_cancelled', { name: after.for_name, email: after.for_email }, after, after.id);
     if (req.user.role !== 'admin')
-      for (const a of await adminRecipients())
+      for (const a of await adminRecipients(after.location_id))
         await queueMail('booking_cancelled', a, after, after.id);
 
     // The released slot goes to whoever asked for it first, if anybody did.

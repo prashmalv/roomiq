@@ -133,5 +133,5 @@ authRouter.post('/change-password', requireAuth, async (req, res, next) => {
 
 export const publicUser = (u) => ({
   id: u.id, name: u.name, email: u.email, role: u.role, department: u.department,
-  isSenior: !!u.is_senior
+  isSenior: !!u.is_senior, locationId: u.location_id || null
 });

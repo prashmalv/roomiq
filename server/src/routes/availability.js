@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { DateTime } from 'luxon';
 import { q } from '../lib/db.js';
-import { requireAuth } from '../lib/auth.js';
+import { requireAuth, isAdmin } from '../lib/auth.js';
 import { getSettings } from '../lib/settings.js';
 import { config } from '../config.js';
 import {
@@ -21,10 +21,10 @@ function project(b, user) {
   const base = {
     id: b.id, start: b.start_time.slice(0, 5), end: b.end_time.slice(0, 5), status: b.status
   };
-  if (user.role === 'admin' || own)
+  if (isAdmin(user) || own)
     return { ...base, title: b.title, holder: b.for_name, holder_email: b.for_email,
              department: b.for_department, attendees: b.attendees, mine: own,
-             pass_code: own || user.role === 'admin' ? b.pass_code : undefined };
+             pass_code: own || isAdmin(user) ? b.pass_code : undefined };
   return { ...base, title: null, holder: null, mine: false };
 }
 
@@ -48,7 +48,11 @@ availabilityRouter.get('/day', requireAuth, async (req, res, next) => {
     const date = String(req.query.date || nowLocal().toISODate());
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new AppError(400, 'BAD_DATE', 'date must be YYYY-MM-DD');
 
-    const rooms = await visibleRooms(req.user);
+    const scope = {
+      locationId: req.query.location ? String(req.query.location) : null,
+      branchId: req.query.branch ? String(req.query.branch) : null
+    };
+    const rooms = await visibleRooms(req.user, scope);
     const all = await bookingsBetween(date, date);
     const grid = daySlots(settings);
     const isToday = date === nowLocal().toISODate();
@@ -62,7 +66,7 @@ availabilityRouter.get('/day', requireAuth, async (req, res, next) => {
       return {
         room: { id: r.id, name: r.name, floor: r.floor, location: r.location,
                 capacity: r.capacity, amenities: r.amenities, restricted: r.restricted,
-                can_book: r.can_book },
+                can_book: r.can_book, branch: r.branch_name, office: r.location_name },
         bookings: mine.map((b) => project(b, req.user)),
         free: free.map((f) => ({ start: minToHHMM(f.start), end: minToHHMM(f.end) })),
         freeMinutes,
@@ -92,7 +96,10 @@ availabilityRouter.get('/month', requireAuth, async (req, res, next) => {
 
     const first = DateTime.fromISO(`${month}-01`, { zone: config.timezone });
     const last = first.endOf('month');
-    const rooms = (await visibleRooms(req.user)).filter((r) => r.can_book);
+    const rooms = (await visibleRooms(req.user, {
+      locationId: req.query.location ? String(req.query.location) : null,
+      branchId: req.query.branch ? String(req.query.branch) : null
+    })).filter((r) => r.can_book);
     const roomFilter = req.query.roomId ? [String(req.query.roomId)] : null;
     const scope = roomFilter ? rooms.filter((r) => r.id === roomFilter[0]) : rooms;
 
@@ -162,8 +169,10 @@ availabilityRouter.get('/suggestions', requireAuth, async (req, res, next) => {
       throw new AppError(400, 'TOO_LONG', `Maximum booking length is ${settings.max_booking_minutes} minutes.`);
 
     const w = bookingWindow(req.user.role, settings);
-    const rooms = (await visibleRooms(req.user))
-      .filter((r) => r.can_book && r.capacity >= attendees && (!roomId || r.id === roomId));
+    const rooms = (await visibleRooms(req.user, {
+      locationId: req.query.location ? String(req.query.location) : null,
+      branchId: req.query.branch ? String(req.query.branch) : null
+    })).filter((r) => r.can_book && r.capacity >= attendees && (!roomId || r.id === roomId));
     if (!rooms.length)
       return res.json({ suggestions: [], note: `No bookable room seats ${attendees}.` });
 
@@ -196,6 +205,7 @@ availabilityRouter.get('/suggestions', requireAuth, async (req, res, next) => {
             const slack = (r.capacity - attendees) / Math.max(r.capacity, 1);
             suggestions.push({
               roomId: r.id, roomName: r.name, floor: r.floor, capacity: r.capacity,
+              branch: r.branch_name, office: r.location_name,
               date, start: minToHHMM(s), end: minToHHMM(s + duration),
               dayLabel: i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : d.toFormat('EEE d LLL'),
               score: i * 100 + midday * 12 + slack * 18 + (s / 1440) * 4

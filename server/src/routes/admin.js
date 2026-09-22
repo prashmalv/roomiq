@@ -2,7 +2,7 @@ import { Router } from 'express';
 import express from 'express';
 import { z } from 'zod';
 import { q, audit } from '../lib/db.js';
-import { requireAuth, requireAdmin, hashPassword } from '../lib/auth.js';
+import { requireAuth, requireAdmin, hashPassword, adminLocationIds, isSuperadmin } from '../lib/auth.js';
 import { getSettings, updateSettings } from '../lib/settings.js';
 import { AppError, nowLocal } from '../lib/rules.js';
 import { queueMail, flushSoon, flushOutbox, verifyDeliveries } from '../lib/mailer.js';
@@ -23,6 +23,9 @@ adminRouter.get('/bookings', async (req, res, next) => {
     const search = req.query.q ? `%${String(req.query.q).trim()}%` : null;
     // ?senior=true is the dedicated leadership queue; absent means everyone.
     const senior = req.query.senior === undefined ? null : req.query.senior === 'true';
+    // null means every office (a superadmin); a list narrows to those offices.
+    const scope = await adminLocationIds(req.user);
+    const only = req.query.location ? String(req.query.location) : null;
 
     const { rows } = await q(
       `${BOOKING_VIEW}
@@ -31,11 +34,13 @@ adminRouter.get('/bookings', async (req, res, next) => {
           AND ($3::date  IS NULL OR b.booking_date <= $3)
           AND ($4::text  IS NULL OR uf.name ILIKE $4 OR r.name ILIKE $4 OR b.title ILIKE $4)
           AND ($5::boolean IS NULL OR uf.is_senior = $5)
+          AND ($6::uuid[] IS NULL OR br.location_id = ANY($6))
+          AND ($7::uuid   IS NULL OR br.location_id = $7)
         ORDER BY (b.status = 'pending') DESC,
                  (b.status = 'pending' AND uf.is_senior) DESC,
                  b.booking_date, b.start_time
         LIMIT 500`,
-      [status, from, to, search, senior]
+      [status, from, to, search, senior, scope, only]
     );
     res.json({ bookings: rows.map((r) => shape(r, true)) });
   } catch (e) { next(e); }
@@ -61,6 +66,7 @@ adminRouter.post('/bookings/:id/reject',  (req, res, next) => decide(req, res, n
 /* =============================================================== rooms ==== */
 const roomSchema = z.object({
   name: z.string().trim().min(2).max(60),
+  branch_id: z.string().uuid(),
   location: z.string().trim().max(120).optional().nullable(),
   floor: z.string().trim().max(40).optional().nullable(),
   capacity: z.number().int().min(1).max(1000),
@@ -69,28 +75,68 @@ const roomSchema = z.object({
   is_active: z.boolean().default(true)
 });
 
-adminRouter.get('/rooms', async (_req, res, next) => {
+adminRouter.get('/rooms', async (req, res, next) => {
   try {
+    const scope = await adminLocationIds(req.user);
     const { rows } = await q(
       `SELECT r.*,
+              br.name AS branch_name, br.location_id,
+              loc.name AS location_name, loc.city AS location_city,
               COALESCE(json_agg(json_build_object('id', u.id, 'name', u.name, 'email', u.email))
                        FILTER (WHERE u.id IS NOT NULL), '[]') AS allocated
          FROM rooms r
+         LEFT JOIN branches br ON br.id = r.branch_id
+         LEFT JOIN locations loc ON loc.id = br.location_id
          LEFT JOIN room_access ra ON ra.room_id = r.id
          LEFT JOIN users u ON u.id = ra.user_id
-        GROUP BY r.id ORDER BY r.floor NULLS LAST, r.name`
-    );
-    res.json({ rooms: rows });
+        WHERE ($1::uuid[] IS NULL OR br.location_id = ANY($1))
+        GROUP BY r.id, br.name, br.location_id, loc.name, loc.city, loc.sort_order
+        ORDER BY loc.sort_order NULLS LAST, loc.name NULLS LAST, br.name NULLS LAST, r.floor NULLS LAST, r.name`
+    , [scope]);
+    res.json({ rooms: rows, scoped: scope !== null });
   } catch (e) { next(e); }
 });
+
+/** The branches an administrator may put a room in. */
+adminRouter.get('/branches', async (req, res, next) => {
+  try {
+    const scope = await adminLocationIds(req.user);
+    const { rows } = await q(
+      `SELECT br.id, br.name, br.address, loc.id AS location_id, loc.name AS location_name, loc.city
+         FROM branches br JOIN locations loc ON loc.id = br.location_id
+        WHERE br.is_active AND loc.is_active
+          AND ($1::uuid[] IS NULL OR loc.id = ANY($1))
+        ORDER BY loc.sort_order, loc.name, br.name`,
+      [scope]
+    );
+    res.json({ branches: rows });
+  } catch (e) { next(e); }
+});
+
+/** Resolves a branch and refuses it if the caller does not administer its office. */
+async function branchInScope(user, branchId) {
+  const { rows } = await q(
+    `SELECT br.id, br.name, br.location_id, loc.name AS location_name
+       FROM branches br JOIN locations loc ON loc.id = br.location_id
+      WHERE br.id = $1`, [branchId]
+  );
+  const br = rows[0];
+  if (!br) throw new AppError(404, 'NO_BRANCH', 'That branch does not exist.');
+  const scope = await adminLocationIds(user);
+  if (scope !== null && !scope.includes(br.location_id))
+    throw new AppError(403, 'NOT_YOUR_OFFICE',
+      `You do not administer ${br.location_name}, so you cannot put rooms there.`);
+  return br;
+}
 
 adminRouter.post('/rooms', async (req, res, next) => {
   try {
     const b = roomSchema.parse(req.body);
+    await branchInScope(req.user, b.branch_id);
     const { rows } = await q(
-      `INSERT INTO rooms (name, location, floor, capacity, amenities, restricted, is_active)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [b.name, b.location, b.floor, b.capacity, b.amenities, b.restricted, b.is_active]
+      `INSERT INTO rooms (name, location, floor, capacity, amenities, restricted, is_active, branch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [b.name, b.location, b.floor, b.capacity, b.amenities, b.restricted, b.is_active, b.branch_id]
     );
     await audit(req.user.id, 'room.create', 'room', rows[0].id, { name: b.name });
     res.status(201).json({ room: rows[0] });
@@ -266,7 +312,7 @@ adminRouter.patch('/settings', async (req, res, next) => {
 adminRouter.get('/outbox', async (req, res, next) => {
   try {
     const { rows } = await q(
-      `SELECT id, kind, to_email, to_name, subject, status, attempts, last_error, created_at, sent_at,
+      `SELECT id, booking_id, kind, to_email, to_name, subject, status, attempts, last_error, created_at, sent_at,
               verified_at, provider_id
          FROM email_outbox ORDER BY created_at DESC LIMIT 100`
     );
@@ -488,6 +534,8 @@ adminRouter.get('/export/people.xlsx', async (req, res, next) => {
 
 /* ========================================================= bulk rooms ===== */
 const ROOM_TEMPLATE_COLUMNS = [
+  { header: 'Office', key: 'office', width: 16 },
+  { header: 'Branch', key: 'branch', width: 22 },
   { header: 'Name', key: 'name', width: 24 },
   { header: 'Capacity', key: 'capacity', width: 10 },
   { header: 'Floor', key: 'floor', width: 16 },
@@ -500,9 +548,10 @@ adminRouter.get('/rooms/template.xlsx', async (req, res, next) => {
   try {
     const buf = await workbookBuffer((wb) => {
       sheet(wb, 'Rooms', ROOM_TEMPLATE_COLUMNS, [
-        { name: 'Ganga', capacity: 8, floor: '2nd floor', location: 'Head Office — Noida',
-          amenities: 'TV screen, Whiteboard', restricted: 'No' },
-        { name: 'Boardroom', capacity: 20, floor: '6th floor', location: 'Head Office — Noida',
+        { office: 'Noida', branch: 'Q Tower', name: 'Ganga', capacity: 8, floor: '2nd floor',
+          location: 'Sector 68', amenities: 'TV screen, Whiteboard', restricted: 'No' },
+        { office: 'Bangalore', branch: 'Bhive Workspace', name: 'Cauvery', capacity: 20,
+          floor: '3rd floor', location: 'Hosur Road',
           amenities: 'Video conferencing, Whiteboard, Speakerphone', restricted: 'Yes' }
       ]);
       // Instructions travel with the file, because whoever fills it in is not
@@ -511,6 +560,8 @@ adminRouter.get('/rooms/template.xlsx', async (req, res, next) => {
       help.columns = [{ width: 18 }, { width: 86 }];
       [
         ['Column', 'What to put'],
+        ['Office', 'Required. The city office, exactly as it appears in UneeRooms — Noida, Delhi, Bangalore, Kolkata, Bhubaneswar, Vijayawada, Coimbatore, Dubai, Singapore, Keller.'],
+        ['Branch', 'Required. The building within that office, e.g. "Q Tower". It must already exist — a super administrator adds branches on the Offices screen.'],
         ['Name', 'Required. The room name staff will recognise. Must be unique — a name that already exists is skipped, never overwritten.'],
         ['Capacity', 'Required. Whole number of seats, 1 to 1000. A request for more attendees than this is refused.'],
         ['Floor', 'Optional, free text, e.g. "2nd floor".'],
@@ -548,10 +599,24 @@ adminRouter.post('/rooms/import',
       if (parsed.length > 500)
         throw new AppError(400, 'TOO_MANY', `That sheet has ${parsed.length} rows. Upload at most 500 at a time.`);
 
+      // Resolve office/branch names once; the sheet refers to them by name
+      // because nobody is going to paste uuids into Excel.
+      const { rows: branchRows } = await q(
+        `SELECT br.id, br.name AS branch, br.location_id, loc.name AS office
+           FROM branches br JOIN locations loc ON loc.id = br.location_id
+          WHERE br.is_active AND loc.is_active`
+      );
+      const byName = new Map(
+        branchRows.map((b) => [`${b.office}||${b.branch}`.toLowerCase(), b])
+      );
+      const scope = await adminLocationIds(req.user);
+
       const created = [], skipped = [];
       for (const r of parsed) {
         const name = (r.name || '').trim();
         const capacity = Number(r.capacity);
+        const office = (r.office || '').trim();
+        const branchName = (r.branch || '').trim();
 
         if (!name || name.length < 2) { skipped.push({ row: r.row, name, reason: 'Name is missing or too short.' }); continue; }
         if (name.length > 60) { skipped.push({ row: r.row, name, reason: 'Name is longer than 60 characters.' }); continue; }
@@ -559,14 +624,27 @@ adminRouter.post('/rooms/import',
           skipped.push({ row: r.row, name, reason: `Capacity "${r.capacity || ''}" is not a whole number between 1 and 1000.` });
           continue;
         }
+        if (!office || !branchName) {
+          skipped.push({ row: r.row, name, reason: 'Office and Branch are both required.' });
+          continue;
+        }
+        const branch = byName.get(`${office}||${branchName}`.toLowerCase());
+        if (!branch) {
+          skipped.push({ row: r.row, name, reason: `No branch "${branchName}" in office "${office}".` });
+          continue;
+        }
+        if (scope !== null && !scope.includes(branch.location_id)) {
+          skipped.push({ row: r.row, name, reason: `You do not administer ${office}.` });
+          continue;
+        }
         const amenities = (r.amenities || '').split(',').map((a) => a.trim()).filter(Boolean).slice(0, 12);
 
         try {
           const { rows } = await q(
-            `INSERT INTO rooms (name, location, floor, capacity, amenities, restricted)
-             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name`,
+            `INSERT INTO rooms (name, location, floor, capacity, amenities, restricted, branch_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, name`,
             [name, (r.location || '').trim() || null, (r.floor || '').trim() || null,
-             capacity, amenities, YES.has(String(r.restricted || '').trim().toLowerCase())]
+             capacity, amenities, YES.has(String(r.restricted || '').trim().toLowerCase()), branch.id]
           );
           created.push({ row: r.row, id: rows[0].id, name: rows[0].name });
         } catch (e) {

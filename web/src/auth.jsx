@@ -35,3 +35,7 @@ export function AuthProvider({ children }) {
 }
 
 export const useAuth = () => useContext(Ctx);
+
+/* Both administrator tiers, so a superadmin is never locked out of an admin
+   screen for not being literally 'admin'. */
+export const isAdminRole = (role) => role === 'admin' || role === 'superadmin';

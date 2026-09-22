@@ -218,3 +218,98 @@ CREATE INDEX IF NOT EXISTS bookings_waitlist_idx
 -- free" is in practice "approve everything" — hence the blunt name, and off by
 -- default so nobody turns off approvals without meaning to.
 ALTER TABLE settings ADD COLUMN IF NOT EXISTS auto_approve_all boolean NOT NULL DEFAULT false;
+
+-- ============================================================================
+-- Offices.  Uneecops is not one building: rooms belong to a branch, a branch
+-- belongs to a city office, and each city office has its own administrators who
+-- decide its requests.  Approval mail follows the room, not a global list.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS locations (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        text NOT NULL UNIQUE,          -- how staff refer to it: "Noida"
+  city        text NOT NULL,
+  region      text,                          -- state, or country when overseas
+  country     text NOT NULL DEFAULT 'India',
+  sort_order  integer NOT NULL DEFAULT 100,
+  is_active   boolean NOT NULL DEFAULT true,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS branches (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  location_id uuid NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  name        text NOT NULL,                 -- the building or floor: "Q Tower"
+  address     text,
+  is_active   boolean NOT NULL DEFAULT true,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (location_id, name)
+);
+
+-- Which offices a person administers. An administrator with no row here
+-- administers nothing; a superadmin needs no rows at all.
+CREATE TABLE IF NOT EXISTS location_admins (
+  location_id uuid NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  granted_by  uuid REFERENCES users(id),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (location_id, user_id)
+);
+
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS branch_id uuid REFERENCES branches(id);
+CREATE INDEX IF NOT EXISTS rooms_branch_idx ON rooms (branch_id);
+
+-- A person's own office, so the booking screens open where they actually sit.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS location_id uuid REFERENCES locations(id);
+
+-- superadmin: manages the offices themselves and appoints their administrators.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'users_role_check'
+       AND pg_get_constraintdef(oid) LIKE '%superadmin%'
+  ) THEN
+    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+    ALTER TABLE users ADD CONSTRAINT users_role_check
+      CHECK (role IN ('employee','admin','superadmin'));
+  END IF;
+END $$;
+
+-- The offices themselves, from uneecops.com. Reference data, not demo data:
+-- every deployment needs them, so they are applied by the migration.
+INSERT INTO locations (name, city, region, country, sort_order) VALUES
+  ('Delhi',        'New Delhi',    'Delhi',          'India',     10),
+  ('Noida',        'Noida',        'Uttar Pradesh',  'India',     20),
+  ('Bangalore',    'Bengaluru',    'Karnataka',      'India',     30),
+  ('Kolkata',      'Kolkata',      'West Bengal',    'India',     40),
+  ('Bhubaneswar',  'Bhubaneswar',  'Odisha',         'India',     50),
+  ('Vijayawada',   'Vijayawada',   'Andhra Pradesh', 'India',     60),
+  ('Coimbatore',   'Coimbatore',   'Tamil Nadu',     'India',     70),
+  ('Dubai',        'Dubai',        NULL,             'UAE',       80),
+  ('Singapore',    'Singapore',    NULL,             'Singapore', 90),
+  ('Keller',       'Keller, TX',   'Texas',          'USA',      100)
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO branches (location_id, name, address)
+SELECT l.id, b.branch, b.addr FROM locations l
+JOIN (VALUES
+  ('Delhi',       'Naraina Head Office', 'C-185, Phase-I, Naraina Industrial Area, New Delhi 110028'),
+  ('Noida',       'Q Tower',             '6th Floor, Q Tower, A-8, Block A, Sector 68, Noida, Uttar Pradesh 201301'),
+  ('Bangalore',   'Bhive Workspace',     'A Block, 3rd Floor, 112, 7th Mile Hosur Rd, Krishna Reddy Industrial Area, Bengaluru 560068'),
+  ('Kolkata',     'AWFIS Chowringhee',   '4th Floor, AWFIS 50, Chowringhee Road, Elgin, Kolkata 700071'),
+  ('Bhubaneswar', 'OCAC Tower',          'South Block, 4th Floor, OCAC Tower, Gajapati Nagar, Bhubaneswar 751013'),
+  ('Vijayawada',  'A.R. Residency',      'D.No.32-29-5/2, Coco-Cola Godown Street, Maruti Nagar, Vijayawada 520004'),
+  ('Coimbatore',  'Quadrant Square',     '16, 7th St, Kamaraj Nagar, Avarampalayam, Coimbatore 641006'),
+  ('Dubai',       'Fairmont Office Towers', '716, Fairmont Office Towers, Sheikh Zayed Road, Dubai'),
+  ('Singapore',   'Tagore Lane',         '25 Tagore Lane, #04-10-2, Singapore 787602'),
+  ('Keller',      'Keller Parkway',      '1540 Keller Parkway, Suite 108-124, Keller, TX 76248')
+) AS b(loc, branch, addr) ON b.loc = l.name
+ON CONFLICT (location_id, name) DO NOTHING;
+
+-- Rooms created before offices existed are all in Noida, which is where this
+-- started. Done once: later rooms carry their branch from creation.
+UPDATE rooms SET branch_id = (
+  SELECT br.id FROM branches br JOIN locations l ON l.id = br.location_id
+   WHERE l.name = 'Noida' ORDER BY br.created_at LIMIT 1
+) WHERE branch_id IS NULL;
+
+CREATE INDEX IF NOT EXISTS location_admins_user_idx ON location_admins (user_id);

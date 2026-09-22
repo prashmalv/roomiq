@@ -34,7 +34,7 @@ export async function requireAuth(req, _res, next) {
     if (!raw) throw new AppError(401, 'NO_SESSION', 'Please sign in.');
     const claims = jwt.verify(raw, config.jwtSecret);
     const { rows } = await q(
-      `SELECT id, name, email, role, department, is_active, is_senior FROM users WHERE id = $1`,
+      `SELECT id, name, email, role, department, is_active, is_senior, location_id FROM users WHERE id = $1`,
       [claims.sub]
     );
     if (!rows[0] || !rows[0].is_active)
@@ -47,10 +47,45 @@ export async function requireAuth(req, _res, next) {
   }
 }
 
+export const isAdmin = (u) => u?.role === 'admin' || u?.role === 'superadmin';
+export const isSuperadmin = (u) => u?.role === 'superadmin';
+
 export function requireAdmin(req, _res, next) {
-  if (req.user?.role !== 'admin')
+  if (!isAdmin(req.user))
     return next(new AppError(403, 'ADMIN_ONLY', 'This action is restricted to administrators.'));
   next();
+}
+
+/** Appointing administrators and changing the offices themselves. */
+export function requireSuperadmin(req, _res, next) {
+  if (!isSuperadmin(req.user))
+    return next(new AppError(403, 'SUPERADMIN_ONLY',
+      'Only a super administrator can change offices or appoint their administrators.'));
+  next();
+}
+
+/**
+ * The offices a person administers.
+ *
+ * `null` means "every office" and is returned for a superadmin — callers treat
+ * null as no restriction rather than as an empty list, so a missing scope can
+ * never silently narrow to nothing. An ordinary admin appointed to no office
+ * gets `[]`, and sees nothing, which is the honest result.
+ */
+export async function adminLocationIds(user) {
+  if (isSuperadmin(user)) return null;
+  const { rows } = await q(`SELECT location_id FROM location_admins WHERE user_id = $1`, [user.id]);
+  return rows.map((r) => r.location_id);
+}
+
+/** Whether this person may decide and manage things in one particular office. */
+export async function canAdminister(user, locationId) {
+  if (isSuperadmin(user)) return true;
+  if (!isAdmin(user) || !locationId) return false;
+  const { rows } = await q(
+    `SELECT 1 FROM location_admins WHERE user_id = $1 AND location_id = $2`, [user.id, locationId]
+  );
+  return rows.length > 0;
 }
 
 /* ---------------------------------------------------------------------------

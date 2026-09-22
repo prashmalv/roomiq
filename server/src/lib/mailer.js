@@ -407,10 +407,36 @@ export async function flushOutbox(limit = 25) {
 /** Fire-and-forget flush so a request never waits on SMTP. */
 export const flushSoon = () => setTimeout(() => flushOutbox().catch(() => {}), 50);
 
-export async function adminRecipients() {
-  const { rows } = await q(
-    `SELECT id, name, email FROM users WHERE role='admin' AND is_active ORDER BY name`
+/**
+ * Who decides a request: the administrators of the office the room is in.
+ *
+ * Falls back deliberately rather than returning nothing — an office with no
+ * administrator appointed yet would otherwise swallow its requests silently.
+ * Superadmins are the backstop, and the configured address after that.
+ */
+export async function adminRecipients(locationId = null) {
+  if (locationId) {
+    const { rows } = await q(
+      `SELECT u.id, u.name, u.email
+         FROM location_admins la JOIN users u ON u.id = la.user_id
+        WHERE la.location_id = $1 AND u.is_active
+        ORDER BY u.name`,
+      [locationId]
+    );
+    if (rows.length) return rows;
+  }
+
+  const { rows: supers } = await q(
+    `SELECT id, name, email FROM users
+      WHERE role = 'superadmin' AND is_active ORDER BY name`
   );
-  if (rows.length) return rows;
+  if (supers.length) return supers;
+
+  // Nothing configured at all: anyone who can administer, then the fallback.
+  const { rows: any } = await q(
+    `SELECT id, name, email FROM users
+      WHERE role IN ('admin','superadmin') AND is_active ORDER BY name`
+  );
+  if (any.length) return any;
   return config.mail.adminFallback ? [{ name: 'Administrator', email: config.mail.adminFallback }] : [];
 }
