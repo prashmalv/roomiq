@@ -10,7 +10,15 @@ import { queueMail, flushSoon } from '../lib/mailer.js';
 
 export const authRouter = Router();
 
-const loginLimit = rateLimit({ windowMs: 10 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
+// Tight in production, where twenty attempts in ten minutes is somebody
+// guessing. Loose elsewhere: the suite signs several accounts in per run and
+// would otherwise lock itself out after two runs, which reads as a real failure.
+const loginLimit = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: config.env === 'production' ? 20 : 500,
+  standardHeaders: true,
+  legacyHeaders: false
+});
 // Sign-up is cheap to abuse and rare to use legitimately, so it is far tighter
 // than sign-in. Outside production the cap is loosened: the smoke suite creates
 // several accounts per run and would otherwise lock itself out after two runs.

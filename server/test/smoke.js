@@ -6,6 +6,8 @@ import { DateTime } from 'luxon';
 import { addMinutes, minutesBetween } from '../../web/src/api.js';
 
 const BASE = process.argv[2] || 'http://localhost:8080';
+// Stamps everything this run creates, so a re-run never collides with the last.
+const stamp = Date.now().toString(36);
 let pass = 0, fail = 0;
 
 const ok = (name, cond, extra = '') => {
@@ -139,14 +141,29 @@ r = await emp('POST', '/api/bookings', {
 });
 ok('the same slot cannot be double booked', r.status === 409 && r.body.error.code === 'SLOT_TAKEN', JSON.stringify(r.body));
 
-const far = DateTime.now().setZone('Asia/Kolkata').plus({ months: 3 }).set({ day: 10 }).toISODate();
+/* Several checks below need a *named* date rather than whatever the suggestion
+   engine offers — a far-future one, a whole week, a specific clash. Those dates
+   are fixed, so they would collide with the bookings the previous run left
+   behind. Giving the suite its own room each run makes it re-runnable without
+   making every date arithmetic-dependent and unreadable. */
+r = await adm('POST', '/api/admin/rooms', {
+  branch_id: noidaBranch.id, name: `Smoke Suite ${stamp}`, capacity: 20,
+  floor: 'Test floor', amenities: []
+});
+ok('the suite gets a room of its own', r.status === 201, JSON.stringify(r.body.error));
+const suiteRoom = r.body.room;
+
+/* Sunday is closed by default, so any fixed date has to step off it — else the
+   suite fails once a week for a reason that has nothing to do with the code. */
+const weekday = (d) => (d.weekday === 7 ? d.plus({ days: 1 }) : d);
+const far = weekday(DateTime.now().setZone('Asia/Kolkata').plus({ months: 3 }).set({ day: 10 })).toISODate();
 r = await emp('POST', '/api/bookings', {
   roomId: pick.roomId, title: 'Too far ahead', attendees: 2, date: far, start: '10:00', end: '11:00'
 });
 ok('employee blocked beyond next month', r.status === 403 && r.body.error.code === 'OUTSIDE_WINDOW', JSON.stringify(r.body));
 
 r = await adm('POST', '/api/bookings', {
-  roomId: pick.roomId, title: 'Admin long-range booking', attendees: 2, date: far, start: '10:00', end: '11:00'
+  roomId: suiteRoom.id, title: 'Admin long-range booking', attendees: 2, date: far, start: '10:00', end: '11:00'
 });
 ok('admin can book the same far date', r.status === 201 && r.body.booking.status === 'approved', JSON.stringify(r.body));
 const adminBooking = r.body.booking;
@@ -154,13 +171,13 @@ const adminBooking = r.body.booking;
 // ------------------------------------------------------------ privacy ----
 console.log('\nvisibility');
 r = await emp('GET', `/api/availability/day?date=${adminBooking.date}`);
-const room = r.body.rooms.find((x) => x.room.id === pick.roomId);
+const room = r.body.rooms.find((x) => x.room.id === suiteRoom.id);
 const other = room.bookings.find((b) => b.id === adminBooking.id);
 ok('employee sees the slot as taken', !!other);
 ok('employee cannot see who holds it', other && other.holder === null, JSON.stringify(other));
 
 r = await adm('GET', `/api/availability/day?date=${adminBooking.date}`);
-const adminView = r.body.rooms.find((x) => x.room.id === pick.roomId).bookings.find((b) => b.id === adminBooking.id);
+const adminView = r.body.rooms.find((x) => x.room.id === suiteRoom.id).bookings.find((b) => b.id === adminBooking.id);
 ok('admin sees the holder', adminView && !!adminView.holder, JSON.stringify(adminView));
 
 // ------------------------------------------------------------ approval ----
@@ -230,9 +247,7 @@ ok('a room cannot be created without an office',
    r.status === 400 && /branch_id/.test(r.body.error.message), JSON.stringify(r.body.error));
 
 // --------------------------------------------------- self-registration ----
-// Unique per run so the suite can be re-run without colliding on the email.
 console.log('\nself-registration');
-const stamp = Date.now().toString(36);
 const newHire = session();
 const senior = session();
 
@@ -417,8 +432,7 @@ console.log('\nrecurring bookings');
 const nextMonday = DateTime.now().setZone('Asia/Kolkata').plus({ weeks: 1 }).startOf('week');
 const mondayISO = nextMonday.toISODate();
 
-r = await junior('GET', '/api/rooms');
-const freeRoom = r.body.rooms.filter((x) => x.can_book)[1];
+const freeRoom = suiteRoom;
 
 r = await junior('POST', '/api/bookings', {
   roomId: freeRoom.id, title: 'Daily standup', attendees: 2,
@@ -494,9 +508,8 @@ ok('a first waiter can sign up', r.status === 201);
 r = await second('POST', '/api/auth/register', { name: 'Smoke Second', email: `smoke.second.${stamp}@uneecops.in`, password: 'Testing@123' });
 ok('a second waiter can sign up', r.status === 201);
 
-r = await junior('GET', '/api/rooms');
-const wlRoom = r.body.rooms.filter((x) => x.can_book)[2];
-const wlDate = DateTime.now().setZone('Asia/Kolkata').plus({ days: 4 }).toISODate();
+const wlRoom = suiteRoom;
+const wlDate = weekday(DateTime.now().setZone('Asia/Kolkata').plus({ days: 4 })).toISODate();
 
 r = await junior('POST', '/api/bookings', {
   roomId: wlRoom.id, title: 'Client meeting', attendees: 2, date: wlDate, start: '13:00', end: '14:00'

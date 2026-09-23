@@ -87,9 +87,22 @@ export default function Dashboard() {
           <h1 className="hero" style={{ marginTop: 14 }}>{greeting}, {user.name.split(' ')[0]}.</h1>
           <p style={{ marginTop: 16 }}>
             {freeNow > 0
-              ? `${freeNow} of ${bookableCount} rooms are free at this moment. The slots below already fit your meeting — pick one and it is booked.`
+              ? `${freeNow} of ${bookableCount} rooms are free at this moment. Pick a suggested slot below, or book a room yourself.`
               : 'Every room is occupied right now. The next free slots are listed below.'}
           </p>
+          {/* The direct way in. The suggestions and the calendar are both
+              faster once you know what you want; this is for when you don't. */}
+          <div className="band-actions">
+            {/* The dialog picks its default room as it opens, so it waits for
+                the room list rather than opening with an empty picker. */}
+            <button className="btn btn-invert" disabled={!rooms.length}
+                    onClick={() => setDialog({})}>
+              {rooms.length ? 'Book a room' : 'Loading rooms…'}
+            </button>
+            <Link className="btn btn-ghost-invert" to="/calendar" style={{ textDecoration: 'none' }}>
+              Browse the calendar
+            </Link>
+          </div>
         </div>
       </section>
 

@@ -412,3 +412,17 @@ tbody tr.row-clash td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
 }
 .scroll-hint { display: none; font-family: var(--mono); font-size: 11px;
                color: var(--ink-3); margin-bottom: var(--s-2); }
+
+/* A primary action sitting on the navy band: the normal blue button has too
+   little contrast against it, so it inverts to white. */
+.btn-invert {
+  background: var(--paper); color: var(--navy); border-color: var(--paper);
+}
+.btn-invert:hover:not(:disabled) { background: var(--pale); border-color: var(--pale); color: var(--navy); }
+.btn-ghost-invert {
+  background: transparent; color: var(--paper); border-color: rgba(255, 255, 255, 0.45);
+}
+.btn-ghost-invert:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12); border-color: var(--paper); color: var(--paper);
+}
+.band-actions { display: flex; gap: var(--s-3); flex-wrap: wrap; margin-top: var(--s-5); }

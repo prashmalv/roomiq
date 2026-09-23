@@ -106,6 +106,12 @@ export default function Calendar() {
         <div className="section-head">
           <h2>{fmtLongDate(date)}</h2>
           <Eyebrow mute>{settings.work_start}–{settings.work_end}</Eyebrow>
+          {/* Picking a slot in the grid prefills the time; this opens the same
+              dialog on the day being viewed, for people who would rather type. */}
+          <button className="btn btn-sm" style={{ marginLeft: 'auto' }}
+                  disabled={!rooms.length} onClick={() => setDialog({ date })}>
+            Book a room
+          </button>
         </div>
         {!day ? <Loading label="Loading day" /> : (
           <>
