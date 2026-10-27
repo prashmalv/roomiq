@@ -84,8 +84,8 @@ ok('a numeric duration adds correctly', addMinutes('15:00', 120) === '17:00', ad
 // A <select> hands back a string; 900 + '120' once produced 02:00.
 ok('a duration arriving as a string still adds', addMinutes('15:00', '120') === '17:00', addMinutes('15:00', '120'));
 ok('a duration crossing the hour adds', addMinutes('10:15', '45') === '11:00', addMinutes('10:15', '45'));
-ok('the longest allowed booking adds', addMinutes('08:00', '240') === '12:00', addMinutes('08:00', '240'));
-ok('every offered duration ends after it starts', ['30','45','60','90','120','180','240']
+ok('the longest allowed booking adds', addMinutes('08:00', '540') === '17:00', addMinutes('08:00', '540'));
+ok('every offered duration ends after it starts', ['30','45','60','90','120','180','240','300','360','420','480','540']
    .every((d) => minutesBetween('09:00', addMinutes('09:00', d)) > 0));
 
 // ---------------------------------------------------------------- auth ----

@@ -3,7 +3,7 @@ import { api, addMinutes, fmtDate, fmtLongDate, minutesBetween } from '../api.js
 import { useAuth, isAdminRole } from '../auth.jsx';
 import { Modal, Field, Notice } from './ui.jsx';
 
-const DURATIONS = [30, 45, 60, 90, 120, 180, 240];
+const DURATIONS = [30, 45, 60, 90, 120, 180, 240, 300, 360, 420, 480, 540];
 
 export default function BookDialog({ prefill, rooms, onClose, onBooked }) {
   const { user, window: win, settings } = useAuth();

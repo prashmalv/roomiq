@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS settings (
   slot_minutes            integer NOT NULL DEFAULT 30,
   employee_window_months  integer NOT NULL DEFAULT 2,   -- current month + next
   admin_window_months     integer NOT NULL DEFAULT 12,
-  max_booking_minutes     integer NOT NULL DEFAULT 240,
+  max_booking_minutes     integer NOT NULL DEFAULT 540,
   allow_weekend           boolean NOT NULL DEFAULT false,
   updated_at              timestamptz NOT NULL DEFAULT now()
 );
@@ -313,3 +313,8 @@ UPDATE rooms SET branch_id = (
 ) WHERE branch_id IS NULL;
 
 CREATE INDEX IF NOT EXISTS location_admins_user_idx ON location_admins (user_id);
+
+-- Bookings may run up to nine hours (a full working day). Lifts installs still
+-- on the old four-hour default; a cap an admin chose deliberately is left alone.
+ALTER TABLE settings ALTER COLUMN max_booking_minutes SET DEFAULT 540;
+UPDATE settings SET max_booking_minutes = 540 WHERE max_booking_minutes = 240;

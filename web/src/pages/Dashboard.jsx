@@ -6,7 +6,7 @@ import { Eyebrow, KPI, Loading, Notice, StatusChip } from '../components/ui.jsx'
 import DayGrid from '../components/DayGrid.jsx';
 import BookDialog from '../components/BookDialog.jsx';
 
-const DURATIONS = [30, 45, 60, 90, 120, 180];
+const DURATIONS = [30, 45, 60, 90, 120, 180, 240, 300, 360, 420, 480, 540];
 
 export default function Dashboard() {
   const { user, settings } = useAuth();
